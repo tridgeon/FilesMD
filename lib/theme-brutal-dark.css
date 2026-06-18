@@ -1,11 +1,3 @@
-/* Brutal dark theme - same brutalist geometry as theme-brutal.css but on a
-   warm-dark canvas with a muted palette pulled from Aivazovsky's seascapes:
-   sage-olive instead of neon lime, burnt amber instead of neon orange,
-   dusty slate-blue instead of electric blue. Off-white cream for body text.
-
-   Scoped to `prefers-color-scheme: dark`; theme-brutal.css covers light. The
-   styling rules here mirror theme-brutal.css because its rules are scoped
-   to `prefers-color-scheme: light` and don't apply on dark systems. */
 @media (prefers-color-scheme: dark) {
 :root {
     --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
@@ -13,10 +5,6 @@
     --color-neo-bg: #1F1D1A;
     --color-neo-text: #E8E3D8;
     --color-neo-border: #C8C2B5;
-    /* Muted accents (Aivazovsky palette) - share names with theme-brutal.css
-       so the rules below stay one-to-one with the light variant. Blue is
-       the popping electric variant so ol/ul/quote/checkbox markers read
-       clearly against the warm-dark canvas. */
     --color-neo-blue: #2E5CFF;
     --color-neo-lime: #A5B888;
     --color-neo-orange: #e8912d;
@@ -80,8 +68,8 @@
 }
 
 #close-sidebar:hover {
-    color: var(--col-accent) !important;
-    stroke: var(--col-accent) !important;
+    color: var(--color-neo-orange) !important;
+    stroke: var(--color-neo-orange) !important;
 }
 
 #close-editor2:hover, #go-forward:hover svg, #go-backward:hover svg {
@@ -97,7 +85,7 @@
 }
 
 #open-sidebar {
-    background: var(--col-bg-active);
+    background: var(--col-bg-alt);
 }
 
 .message.own {
@@ -126,31 +114,28 @@
 
 .cm-s-hypermd-light pre.HyperMD-header.HyperMD-header-1 {
     padding-top: 18px !important;
-    padding-bottom: 32px !important;
-    background-image: linear-gradient(
-        to bottom,
-        transparent 0,
-        transparent calc(100% - 15.5px),
-        var(--col-border) calc(100% - 15.5px),
-        var(--col-border) calc(100% - 14px),
-        transparent calc(100% - 14px)
-    ) !important;
+    padding-bottom: 0 !important;
 }
 
 .cm-s-hypermd-light .CodeMirror-code > pre.HyperMD-header.HyperMD-header-1:first-child,
 .cm-s-hypermd-light .CodeMirror-code > :first-child pre.HyperMD-header.HyperMD-header-1 {
     padding-top: 0 !important;
-    padding-bottom: 32px !important;
 }
 
-/* Only the FIRST H1 keeps the underline; subsequent H1s drop it. */
-.cm-s-hypermd-light .CodeMirror-code pre.HyperMD-header.HyperMD-header-1:not(:nth-child(1 of pre.HyperMD-header.HyperMD-header-1)) {
-    background-image: none !important;
-    padding-bottom: 0 !important;
+/* Keep the breathing room after the first H1; subsequent H1s stay tight. */
+.cm-s-hypermd-light .CodeMirror-code pre.HyperMD-header.HyperMD-header-1:nth-child(1 of pre.HyperMD-header.HyperMD-header-1) {
+    padding-bottom: 16px !important;
+}
+
+/* Header immediately after the first H1: drop its own top padding so we
+   don't get stacked margins. */
+.cm-s-hypermd-light .CodeMirror-code pre.HyperMD-header.HyperMD-header-1:nth-child(1 of pre.HyperMD-header.HyperMD-header-1) + pre.HyperMD-header {
+    padding-top: 0 !important;
 }
 
 .cm-s-hypermd-light pre.HyperMD-header.HyperMD-header-2 {
     padding-top: 18px !important;
+    padding-bottom: 6px !important;
     font-size: 24px !important;
     line-height: 30px !important;
     font-weight: 700 !important;
@@ -158,6 +143,7 @@
 
 .cm-s-hypermd-light pre.HyperMD-header.HyperMD-header-3 {
     padding-top: 16px !important;
+    padding-bottom: 5px !important;
     font-size: 22px !important;
     line-height: 28px !important;
     font-weight: 700 !important;
@@ -165,6 +151,7 @@
 
 .cm-s-hypermd-light pre.HyperMD-header.HyperMD-header-4 {
     padding-top: 14px !important;
+    padding-bottom: 4px !important;
     font-size: 20px !important;
     line-height: 26px !important;
     font-weight: 700 !important;
@@ -172,6 +159,7 @@
 
 .cm-s-hypermd-light pre.HyperMD-header.HyperMD-header-5 {
     padding-top: 12px;
+    padding-bottom: 4px;
     font-size: 18px;
     line-height: 24px !important;
     font-weight: 700 !important;
@@ -179,6 +167,7 @@
 
 .cm-s-hypermd-light pre.HyperMD-header.HyperMD-header-6 .cm-header-6 {
     padding-top: 12px;
+    padding-bottom: 4px;
     font-size: 16px;
     font-weight: 700;
     line-height: 22px;
@@ -195,9 +184,6 @@
     font-weight: 400;
 }
 
-/* Ol/ul markers in the same muted-burnt-amber as the code chip and the
-   hover-orange (`--color-neo-orange`) - separates list affordances
-   visually from the blue quote-bar/`>` marker. */
 .cm-s-hypermd-light span.cm-formatting-list-ol {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
     color: var(--color-neo-orange) !important;
@@ -221,9 +207,6 @@
     font-weight: 400;
 }
 
-/* Links in dark mode use a brighter sky-blue than the muted slate-blue
-   accent - the dusty `--color-neo-blue` is too low-contrast against the
-   warm-dark canvas to read as a clear link affordance. */
 .cm-s-hypermd-light span.cm-link,
 .cm-s-hypermd-light span.cm-string.cm-url.cm-hmd-barelink {
     line-height: 1.6 !important;
@@ -251,16 +234,36 @@
 }
 
 .cm-s-hypermd-light pre.HyperMD-quote-1:before {
-    background: var(--color-neo-blue) !important;
+    background: var(--color-neo-orange) !important;
     width: 4px !important;
 }
 
 .cm-s-hypermd-light pre.HyperMD-quote-1 {
-    background: color-mix(in srgb, var(--color-neo-blue) 8%, var(--col-bg)) !important;
+    background: color-mix(in srgb, var(--color-neo-orange) 8%, var(--col-bg)) !important;
+}
+/* Match escape chars to the theme text color (hypermd.css default is too light). */
+.cm-s-hypermd-light span.cm-hmd-escape-backslash,
+.cm-s-hypermd-light span.cm-hmd-escape-char {
+    color: var(--col-tx) !important;
+}
+/* Hide the leading/trailing "dummy" table separators HyperMD inserts. */
+.cm-s-hypermd-light pre.HyperMD-table-row span.cm-hmd-table-sep.cm-hmd-table-sep-dummy {
+    visibility: hidden !important;
+}
+/* Round the outer corners of a multi-line blockquote, matching the code-block treatment. */
+.cm-s-hypermd-light pre.HyperMD-quote-1:first-child,
+.cm-s-hypermd-light :not(pre.HyperMD-quote-1) + pre.HyperMD-quote-1 {
+    border-top-left-radius: 7px !important;
+    border-top-right-radius: 7px !important;
+}
+.cm-s-hypermd-light pre.HyperMD-quote-1:last-child,
+.cm-s-hypermd-light pre.HyperMD-quote-1:has(+ :not(pre.HyperMD-quote-1)) {
+    border-bottom-left-radius: 7px !important;
+    border-bottom-right-radius: 7px !important;
 }
 
 .cm-s-hypermd-light span.cm-formatting-quote {
-    color: var(--color-neo-blue);
+    color: var(--color-neo-orange);
     position: relative;
     left: 1px;
 }
@@ -273,11 +276,6 @@
     text-indent: 0 !important;
 }
 
-
-
-/* Code chip: dark tile with muted-burnt-amber text and matching border -
-   reuses the same `--color-neo-orange` hover hue (tree-item hover,
-   search-result focus, action-btn hover, etc.) so accents stay coherent. */
 .cm-s-hypermd-light .cm-inline-code,
 .cm-s-hypermd-light code {
     font-family: var(--font-mono-brutal) !important;
@@ -301,11 +299,26 @@
     border-right: none !important;
     border-radius: 0 !important;
 }
+.cm-s-hypermd-light div.HyperMD-codeblock-begin-bg {
+    border-top-left-radius: 7px !important;
+    border-top-right-radius: 7px !important;
+}
+.cm-s-hypermd-light div.HyperMD-codeblock-end-bg {
+    border-bottom-left-radius: 7px !important;
+    border-bottom-right-radius: 7px !important;
+}
+/* Raw-math chip tinted with the theme accent (neo-orange) instead of the
+   code-block panel color, so editable math stands out distinctly from code. */
+.cm-s-hypermd-light span.cm-math,
+.cm-s-hypermd-light span.hmd-fold-math-placeholder {
+    background: color-mix(in srgb, var(--color-neo-orange), transparent 75%) !important;
+}
 
 .cm-s-hypermd-light pre.HyperMD-codeblock {
     font-family: var(--font-mono-brutal) !important;
-    font-size: 1em !important;
+    font-size: 0.9em !important;
     padding-left: 20px !important;
+    color: var(--col-tx) !important;
 }
 
 .cm-hmd-comment,
@@ -316,7 +329,6 @@
     display: none;
 }
 
-/* Sidebar blink in the neo-orange accent. */
 @keyframes sidebar-highlight-brutal {
     0%   { color: var(--color-neo-orange); opacity: 1; }
     20%  { color: var(--color-neo-orange); opacity: 0.7; }
@@ -371,13 +383,13 @@
     stroke: #1F1D1A !important;
 }
 
-.tree-container span.tree-item.selected,
-.tree-container span.tree-item.selected:hover {
+.tree-container span.tree-item.tree-leaf.selected,
+.tree-container span.tree-item.tree-leaf.selected:hover {
     background-color: var(--color-neo-blue) !important;
     color: #E8E3D8 !important;
 }
-.tree-container span.tree-item.selected .tree-mod_icon svg,
-.tree-container span.tree-item.selected:hover .tree-mod_icon svg {
+.tree-container span.tree-item.tree-leaf.selected .tree-mod_icon svg,
+.tree-container span.tree-item.tree-leaf.selected:hover .tree-mod_icon svg {
     stroke: #E8E3D8 !important;
 }
 
@@ -392,7 +404,7 @@
     transition: background 0.15s ease !important;
 }
 .message:hover {
-    background: var(--color-neo-orange) !important;
+    background: #000 !important;
 }
 .complete-btn:hover {
     background: transparent !important;
@@ -409,60 +421,38 @@
 .message-time {
     color: var(--col-tx-alt) !important;
 }
-/* Quick-action buttons inside chat messages: hover neo-blue, matching
-   the sidebar's "selected file" treatment. */
 .action-btn:hover {
-    background: var(--color-neo-blue) !important;
+    background: var(--color-neo-orange) !important;
 }
 .message.actions-pinned,
 .message.selected {
-    background: color-mix(in srgb, var(--color-neo-orange) 18%, transparent) !important;
-    border-color: var(--color-neo-orange) !important;
+    background: color-mix(in srgb, var(--color-neo-blue) 18%, transparent) !important;
+    border-color: var(--color-neo-blue) !important;
 }
 
 .cm-s-hypermd-light .CodeMirror-line {
     line-height: 1.9 !important;
 }
 
-/* Empty-chat hero styled like an editor H1 - Inter, uppercase, heavy
-   weight, tracking, with a hard rule under the title. */
-.empty-title,
-.empty-desc {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
-    letter-spacing: 0.04em;
+.empty-title {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+    letter-spacing: normal;
 }
 .empty-title {
-    font-weight: 800 !important;
-    padding-bottom: 14px;
-    border-bottom: 2px solid var(--col-border);
+    font-weight: 400 !important;
+    font-size: 28px !important;
     margin-bottom: 20px !important;
 }
-.empty-desc {
-    font-weight: 500 !important;
-    letter-spacing: 0.08em;
-    color: var(--color-neo-orange) !important;
-}
-
 #search, #move,
 #search-input, #move-input,
-#nav-buttons,
-#open-folder,
-.message,
-.message:first-child,
-.message:last-child,
-.message:only-child,
 .message-content,
 .message-actions,
-.action-btn,
-.complete-btn,
-.btn-label,
 .CodeMirror-hints,
 .CodeMirror-hint,
 .sidebar-ctx-menu {
     border-radius: 0 !important;
 }
 
-/* Chat modal + input keep softened corners (half the chat.css defaults). */
 #chat-container.modal {
     border-radius: 7px !important;
 }
@@ -481,5 +471,28 @@
 .sidebar-ctx-menu-item:hover {
     background: var(--color-neo-orange) !important;
     color: #1F1D1A !important;
+}
+
+/* Tooltips in dark theme: solid black bubble + light text (rather than the
+   inverted off-white that --col-accent would give us). Stands out clearly
+   over the dark page. */
+#toolbar button::after,
+#close-sidebar::after,
+#go-backward::after,
+#go-forward::after,
+#close-editor2::after,
+.btn-label {
+    background: #000 !important;
+    color: #E8E3D8 !important;
+}
+#toolbar button::before,
+#close-sidebar::before,
+#go-backward::before,
+#go-forward::before,
+#close-editor2::before {
+    border-bottom-color: #000 !important;
+}
+.btn-label::after {
+    border-top-color: #000 !important;
 }
 } /* end @media (prefers-color-scheme: dark) */

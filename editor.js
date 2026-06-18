@@ -24,12 +24,21 @@ function initEditor(el) {
         viewportMargin: 10,
         mode: {
             name: 'hypermd',
-            math: false, // disable $math syntax$
+            math: true,
         },
         lineNumbers: false,
         extraKeys: {
             // 'Shift-Space': 'autocomplete',
             'Cmd-[': false, 'Cmd-]': false,
+            // Mac's default delWrappedLineLeft is a no-op at column 0, so
+            // Cmd-Backspace gets stuck at the line start instead of joining
+            // with the previous line. Fall back to delCharBefore there.
+            'Cmd-Backspace': cm => {
+                if (cm.somethingSelected() || cm.getCursor().ch > 0) {
+                    return CodeMirror.Pass;
+                }
+                cm.execCommand('delCharBefore');
+            },
         },
         hintOptions: {
             hint: CompleteEmoji.createHintFunc(),
@@ -41,6 +50,12 @@ function initEditor(el) {
         hmdFoldEmoji: {
             myEmoji: createAutocompleteDict
         },
+        hmdFoldMath: {
+            renderer: KatexRenderer,
+        },
+        // Enable fold-code so ```mermaid blocks get rendered via the
+        // hypermd-mermaid renderer (registered as suggested:true on load).
+        hmdFoldCode: { mermaid: true },
         configureMouse: () => ({addNew: false}) // disable multicursor
     });
     newEditor.setSize(null, '100%');
@@ -69,37 +84,31 @@ function initEditor(el) {
         // Exclude local-file extensions (md, image types) so `![](img.png)`
         // isn't mistaken for a domain.
         if (/^[a-z0-9-]+(\.[a-z0-9-]+)+(\/|$)/i.test(path)
-            && !/\.(md|png|jpg|jpeg|gif|webp)$/i.test(path)) {
+            && !/\.(md|png|jpg|jpeg|gif|webp|mp4|webm|mov|mp3|ogg|oga|weba|wav)$/i.test(path)) {
             return 'https://' + path;
         }
 
         if (/^(?!http|https|\[).+\.md$/.test(path)) {
-            let parts = path.split('/');
-            if (parts.length === 1) {
-                openFile('', path, true, 'editor2-textarea');
-                return;
-            }
-            openFile(parts[0], parts[1], true, 'editor2-textarea');
+            const isMobile = window.matchMedia('(max-width: 670px)').matches;
+            const target = isMobile ? 'editor-textarea' : 'editor2-textarea';
+            const fullPath = path.startsWith('/') ? path : '/' + path;
+            openFile(fullPath, true, target);
             return path;
         }
 
-        // Capture only the bare filename (no slashes) so the media/img
-        // lookups by filename work even when path has a folder prefix.
-        const match = path.match(/(?:^|\/)([^/]+\.(png|jpg|jpeg|gif|webp))$/i);
-
-        if (match && files['media/'] && files['media/'][match[1]]) {
-            return files['media/'][match[1]].imageUrl;
-        }
-
-        if (match && files['img/'] && files['img/'][match[1]]) {
-            return files['img/'][match[1]].imageUrl;
-        }
-
-        // Filename fallback - look up bare filename in the global
-        // image index built by loadLocalFiles. Resolves images stored in
-        // any folder when the markdown link's path doesn't match.
-        if (match) {
-            const bareName = match[1].split('/').pop();
+        // Look up by bare filename so media/img lookups work even when path
+        // has a folder prefix.
+        if (isMediaPath(path)) {
+            const bareName = path.split('/').pop();
+            if (files['media/'] && files['media/'][bareName]) {
+                return files['media/'][bareName].imageUrl;
+            }
+            if (files['img/'] && files['img/'][bareName]) {
+                return files['img/'][bareName].imageUrl;
+            }
+            // Fallback - look up bare filename in the global media index
+            // built by loadLocalFiles. Resolves media stored in any folder
+            // when the markdown link's path doesn't match.
             if (mediaIndex[bareName] && mediaIndex[bareName].imageUrl) {
                 return mediaIndex[bareName].imageUrl;
             }
@@ -130,8 +139,14 @@ function initEditor(el) {
 
         path += '.md';
 
+        // Phones don't have the room for the split-view editor2 -
+        // route link follows into the main editor instead.
+        const target = window.matchMedia('(max-width: 670px)').matches
+            ? 'editor-textarea'
+            : 'editor2-textarea';
+
         if (getMemFile(path) !== null) {
-            openFile(path, true, 'editor2-textarea')
+            openFile(path, true, target)
             return;
         }
 
@@ -143,14 +158,45 @@ function initEditor(el) {
             }
 
             if (toFilename(path) === filename) {
-                openFile(path, true, 'editor2-textarea');
+                openFile(path, true, target);
                 return false;
             }
         });
     };
 
     newEditor.on('inputRead', async function (cm, change) {
+        if (change.text.length === 1 && change.text[0] === '`') {
+            const cursor = cm.getCursor();
+            const line = cm.getLine(cursor.line);
+            const before = line.slice(0, cursor.ch);
+            const after = line.slice(cursor.ch);
+            // Trigger only on the third backtick at the start of a line.
+            if (!/^ {0,3}`{3}$/.test(before)) return;
+            if (after.length > 0) return;
+            // Skip when this ``` is closing an already-open fence.
+            if (cursor.line > 0) {
+                const prevState = cm.getStateAfter(cursor.line - 1);
+                if (prevState && prevState.fencedEndRE) return;
+            }
+            cm.replaceRange('\n\n```', cursor);
+            cm.setCursor({ line: cursor.line + 1, ch: 0 });
+            return;
+        }
         if (change.text.length === 1 && change.text[0] === '[') {
+            const cursor = cm.getCursor();
+            // Skip the link autocomplete when the [ is preceded by a
+            // backslash - that's an escaped bracket, not the start of a link.
+            const charBefore = cursor.ch >= 2 ? cm.getRange({line: cursor.line, ch: cursor.ch - 2}, {line: cursor.line, ch: cursor.ch - 1}) : '';
+            if (charBefore === '\\') {
+                return;
+            }
+            // Skip when the [ sits inside an inline code span (`...[...`).
+            // The token at the cursor carries the `inline-code` style and we
+            // don't want to insert links into code.
+            const token = cm.getTokenAt(cursor);
+            if (token && token.type && /\binline-code\b/.test(token.type)) {
+                return;
+            }
             cm.showHint({
                 completeSingle: false, updateOnCursorActivity: true,
             })
@@ -197,8 +243,10 @@ function initEditor(el) {
     newEditor.on('paste', async (_, event) => {
         const items = (event.clipboardData || event.originalEvent.clipboardData).items;
         for (const item of items) {
-            if (item.kind === 'file' && item.type.startsWith('image/')) {
-                event.preventDefault(); // Prevent default paste behavior
+            const isMedia = item.kind === 'file'
+                && (item.type.startsWith('image/') || item.type.startsWith('video/') || item.type.startsWith('audio/'));
+            if (isMedia) {
+                event.preventDefault();
 
                 const file = item.getAsFile();
                 const fileName = `${new Date().toISOString().replace(/[:.]/g, '-')}.${getImageExtension(item.type)}`;
@@ -218,14 +266,14 @@ function initEditor(el) {
 
                         const markdownImageSyntax = `![](media/${fileName})\n`;
                         currentEditor.replaceSelection(markdownImageSyntax);
-                        log(`Image saved as: ${fileName}`);
+                        log(`Media saved as: ${fileName}`);
                     } else {
-                        logError('Failed to save the image.');
-                        alert('Failed to save the image. Please try again.');
+                        logError('Failed to save the media.');
+                        alert('Failed to save the file. Please try again.');
                     }
                 } catch (error) {
-                    logError('Error saving image:', error);
-                    alert('Error saving image: ' + error.message);
+                    logError('Error saving media:', error);
+                    alert('Error saving file: ' + error.message);
                 }
             }
         }
@@ -234,6 +282,7 @@ function initEditor(el) {
     // Editor keybindings
     newEditor.addKeyMap({
         'Enter': function (cm) { // If header is selected, enter should move cursor to next line
+            if (tableEnterCell(cm)) return;
             const cursor = cm.getCursor();
             // If there's a selection on the header line, just move cursor
             if (cursor.line === 0) {
@@ -259,6 +308,7 @@ function initEditor(el) {
             return CodeMirror.Pass;
         },
         'Cmd-A': function (cm) {
+            if (tableSelectCell(cm)) return;
             const cursor = cm.getCursor();
 
             // If cursor is on the first line, select all text in that line
@@ -282,6 +332,7 @@ function initEditor(el) {
             );
         },
         'Ctrl-A': function (cm) {
+            if (tableSelectCell(cm)) return;
             const cursor = cm.getCursor();
 
             // If cursor is on the first line, select all text in that line
@@ -304,16 +355,22 @@ function initEditor(el) {
                 {scroll: false}
             );
         },
+        'Cmd-T': function (cm) {
+            tableInsert(cm);
+        },
+        'Ctrl-T': function (cm) {
+            tableInsert(cm);
+        },
         'Cmd-Y': function (cm) {
             var cursor = cm.getCursor();
             var lineStart = {line: cursor.line, ch: 0};
-            cm.replaceRange('✅ ', lineStart);
+            cm.replaceRange('- [ ] ', lineStart);
             cm.focus();
         },
         'Ctrl-Y': function (cm) {
             var cursor = cm.getCursor();
             var lineStart = {line: cursor.line, ch: 0};
-            cm.replaceRange('✅ ', lineStart);
+            cm.replaceRange('- [ ] ', lineStart);
             cm.focus();
         },
         'Cmd-B': function (cm) {
@@ -370,17 +427,7 @@ function initEditor(el) {
         }
     });
 
-    newEditor.getWrapperElement().addEventListener('mousedown', function (e) {
-        if (!isMetaKey(e)) return;
-
-        e.preventDefault();
-
-        const code = e.target.closest('.cm-inline-code');
-        if (!code) return;
-
-        const text = code.textContent;
-        navigator.clipboard.writeText(text);
-
+    function showCopiedToast() {
         const toast = document.createElement('div');
         toast.textContent = 'Copied!';
         toast.style.cssText = `
@@ -391,9 +438,49 @@ function initEditor(el) {
         `;
         document.body.appendChild(toast);
         setTimeout(() => document.body.removeChild(toast), 1000);
+    }
+
+    newEditor.getWrapperElement().addEventListener('mousedown', function (e) {
+        if (!isMetaKey(e)) return;
+
+        e.preventDefault();
+
+        const code = e.target.closest('.cm-inline-code');
+        if (!code) return;
+
+        navigator.clipboard.writeText(code.textContent);
+        showCopiedToast();
     }, true);
 
+    newEditor.on('renderLine', function (cm, lineHandle, el) {
+        if (el.querySelector('.code-copy-btn')) return;
+        const lineNo = lineHandle.lineNo();
+        if (lineNo == null) return;
+        const here = cm.getStateAfter(lineNo);
+        const prev = lineNo > 0 ? cm.getStateAfter(lineNo - 1) : null;
+        if (!(here && here.fencedEndRE && (!prev || !prev.fencedEndRE))) return;
+        if (/^\s*```\s*mermaid\b/.test(cm.getLine(lineNo))) return;
+        const btn = document.createElement('button');
+        btn.className = 'code-copy-btn';
+        btn.title = 'Copy';
+        btn.onmousedown = function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const begin = lineHandle.lineNo();
+            const lines = [];
+            for (let L = begin + 1, last = cm.lineCount(); L < last; L++) {
+                const st = cm.getStateAfter(L);
+                if (!st || !st.fencedEndRE) break;
+                lines.push(cm.getLine(L));
+            }
+            navigator.clipboard.writeText(lines.join('\n'));
+            showCopiedToast();
+        };
+        el.appendChild(btn);
+    });
+
     initAutoscroll(newEditor);
+    initTablePlus(newEditor);
 
     return newEditor;
 }
@@ -442,3 +529,32 @@ function restoreEditorPos() {
     editor.refresh();
     editor.scrollTo(null, savedScrollTop);
 }
+
+// KaTeX renderer for HyperMD's fold-math addon. fold-math instantiates
+// this class with (container, mode) and calls startRender/clear as the
+// user edits. mode === 'display' for $$...$$, anything else for $...$.
+function KatexRenderer(container, mode) {
+    this.container = container;
+    this.mode = mode;
+    this.span = document.createElement('span');
+    container.appendChild(this.span);
+}
+KatexRenderer.prototype.startRender = function (expr) {
+    try {
+        window.katex.render(expr, this.span, {
+            displayMode: this.mode === 'display',
+            throwOnError: false,
+        });
+    } catch (e) {
+        this.span.textContent = expr;
+    }
+    if (this.onChanged) this.onChanged(expr);
+};
+KatexRenderer.prototype.clear = function () {
+    if (this.span.parentNode === this.container) {
+        this.container.removeChild(this.span);
+    }
+};
+KatexRenderer.prototype.isReady = function () {
+    return true;
+};

@@ -1,10 +1,11 @@
-// We need our application to work online, so we install a service worker.
+// We need our application to work offline, so we install a service worker.
 // Server worker intercept calls to the specified urls and returns cached copies.
 
 // Web folder is our doc root.
 const urlsToCache = [
     '/',
     '/favicon.ico',
+    '/favicon.svg',
     '/img/icon.png',
     '/img/icon_small.png',
     '/manifest.json',
@@ -29,7 +30,10 @@ const urlsToCache = [
     '/lib/fold.js',
     '/lib/fold-image.js',
     '/lib/fold-link.js',
-    '/lib/table-align.js',
+    '/lib/fold-code.js',
+    '/lib/hypermd-mermaid.js',
+    // mermaid.min.js intentionally NOT pre-cached; lazy-loaded on first use
+    // and the SW's dynamic fetch handler caches it at that point.
     '/lib/autocomplete-link.js',
     '/lib/show-hint.js',
     '/lib/autoscroll.js',
@@ -48,6 +52,31 @@ const urlsToCache = [
     '/editor.js',
     '/chat.js',
     '/modals.js',
+    '/lib/latex/fold-math.js',
+    '/lib/latex/katex.min.js',
+    '/lib/latex/katex.min.css',
+    '/lib/latex/KaTeX_AMS-Regular.woff2',
+    '/lib/latex/KaTeX_Caligraphic-Bold.woff2',
+    '/lib/latex/KaTeX_Caligraphic-Regular.woff2',
+    '/lib/latex/KaTeX_Fraktur-Bold.woff2',
+    '/lib/latex/KaTeX_Fraktur-Regular.woff2',
+    '/lib/latex/KaTeX_Main-Bold.woff2',
+    '/lib/latex/KaTeX_Main-BoldItalic.woff2',
+    '/lib/latex/KaTeX_Main-Italic.woff2',
+    '/lib/latex/KaTeX_Main-Regular.woff2',
+    '/lib/latex/KaTeX_Math-BoldItalic.woff2',
+    '/lib/latex/KaTeX_Math-Italic.woff2',
+    '/lib/latex/KaTeX_SansSerif-Bold.woff2',
+    '/lib/latex/KaTeX_SansSerif-Italic.woff2',
+    '/lib/latex/KaTeX_SansSerif-Regular.woff2',
+    '/lib/latex/KaTeX_Script-Regular.woff2',
+    '/lib/latex/KaTeX_Size1-Regular.woff2',
+    '/lib/latex/KaTeX_Size2-Regular.woff2',
+    '/lib/latex/KaTeX_Size3-Regular.woff2',
+    '/lib/latex/KaTeX_Size4-Regular.woff2',
+    '/lib/latex/KaTeX_Typewriter-Regular.woff2',
+    '/lib/table.js',
+
 ];
 
 const urlParams = new URLSearchParams(self.location.search);
@@ -55,6 +84,9 @@ const COMMIT_HASH = urlParams.get('v') ? `?v=${urlParams.get('v')}` : '';
 
 const cacheName = `files-md-v${COMMIT_HASH}`;
 
+// Pre-fetch every file in urlsToCache so the app works offline right after the
+// first visit. Without this, *.js files would be requested before SW is ready,
+// and thus not cached and ready for offline.
 self.addEventListener('install', event => {
     event.waitUntil((async () => {
         let cache;
@@ -66,7 +98,9 @@ self.addEventListener('install', event => {
         }
 
         for (let url of urlsToCache) {
-            const shouldAddRevisionHash = url !== "/" && url !== 'favicon.ico' && !url.startsWith('/img/');
+            // KaTeX fonts are referenced by katex.min.css with no version param,
+            // so the cache key must match (no hash appended either).
+            const shouldAddRevisionHash = url !== "/" && url !== 'favicon.ico' && url !== 'favicon.svg' && !url.startsWith('/img/') && !url.endsWith('.woff2');
             if (shouldAddRevisionHash) {
                 url = url + COMMIT_HASH;
             }

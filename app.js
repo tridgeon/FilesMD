@@ -1,9 +1,3 @@
-// Main application file.
-// We use HyperMD/Codemirror as an underlying text editor.
-// We read and save files using Local File System API (or in-memory FS in case of Safari).
-// We sync both text and media files with the server if there's a token key in local storage.
-// Token is stored implicitly in a http secure cookie. API server provides the cookie on first /token request.
-
 const sidebar = document.getElementById('sidebar');
 const content = document.getElementById('content')
 
@@ -70,9 +64,18 @@ async function init() {
     if (hasSavedLocalDir) {
         isMemFS = false;
         document.getElementById('open-folder').style.display = 'none';
-    } else {
+    } else if (typeof window.showDirectoryPicker === 'function') {
         document.getElementById('open-folder').style.display = 'flex';
         isMemFS = true;
+    } else {
+        // Safari/Firefox have no File System Access API for now, hide CTA.
+        document.getElementById('open-folder').style.display = 'none';
+        isMemFS = true;
+    }
+
+    // Let's create local-first like experience by preloading images.
+    if (isMemFS) {
+        prefetchWelcomeImages();
     }
 
     // Alert if there's no "Allow on every visit" check.
@@ -108,7 +111,7 @@ async function init() {
     }
 
     perf = performance.now();
-    await syncTextsWithServer();
+    await syncFilesWithServer();
     await renderSidebar();
     await syncMediaFiles();
     log(`Files initialized in: ${(performance.now() - perf).toFixed(3)} milliseconds`);
@@ -181,24 +184,13 @@ function createAutocompleteDict() {
 
 async function newFile(parentDir) {
     log('New file clicked');
-    let dirPath;
-    if (parentDir !== undefined) {
-        // Explicit parent (e.g. from sidebar right-click → New file).
-        dirPath = parentDir === '/' ? '/' : parentDir.replace(/\/$/, '');
-    } else {
-        dirPath = toDirPath(currentEditor.path);
-        let selectedDirs = tree.getSelectedNodes();
-        if (selectedDirs.length > 0 &&
-            selectedDirs[0].getOptions &&
-            typeof selectedDirs[0].getOptions === 'function' &&
-            selectedDirs[0].getOptions()['dir'] === true) {
-            dirPath = '/' + selectedDirs[0].toString();
-        }
-    }
-    // TODO don't create on disk?
-    let filename = 'New file.md';
+    // New files always land at the root. The `parentDir` parameter is still
+    // honored (sidebar right-click → New file inside a specific folder).
+    const dirPath = parentDir !== undefined
+        ? (parentDir === '/' ? '/' : parentDir.replace(/\/$/, ''))
+        : '/';
 
-    // TODO check tests
+    let filename = 'New file.md';
     let num = 1;
     while (getMemFile(joinPath(dirPath, filename)) !== null) {
         log('file exists', joinPath(dirPath, filename));
@@ -223,14 +215,6 @@ async function newFile(parentDir) {
     log('CURRENT path after new', currentEditor.path);
     editor.setCursor({ line: 1, ch: 0 });
     editor.focus();
-
-    const folder = dirPath === '/' ? '/' : dirPath.replace(/^\//, '').replace(/\/$/, '');
-    const toastMsg = document.createElement('span');
-    toastMsg.append('Created at ');
-    const bold = document.createElement('b');
-    bold.textContent = folder;
-    toastMsg.appendChild(bold);
-    showToast(toastMsg);
 
     await renderSidebar();
 }
@@ -267,32 +251,71 @@ function isMetaKey(event) {
     return event.metaKey || event.ctrlKey || event.altKey;
 }
 
+function isSidebarToggleShortcut(event) {
+    if (!isMetaKey(event)) {
+        return false;
+    }
+
+    // Match the physical shortcut key across ANSI/ISO keyboard layouts.
+    return event.code === 'Backquote'
+        || event.code === 'IntlBackslash'
+        || event.key === '`'
+        || event.key === '~'
+        || event.key === '§'
+        || event.key === '±';
+}
+
 async function openDir() {
     let dirHandle = null;
     try {
         dirHandle = await window.showDirectoryPicker({ 'mode': 'readwrite' });
     } catch (error) {
         // User pressed Esc (AbortError) or the browser doesn't support
-        // the picker (TypeError). Either way, leave the CTA visible so
-        // the user can try again.
+        // the picker (TypeError).
         if (error instanceof TypeError) {
             alert('For now only Chrome browser supports local folders :(');
         }
         return;
     }
-    document.getElementById('open-folder').style.display = 'none';
-
     // TODO check that permissions are given?
+
+    // Don't race the existing files loading.
+    while (isLoadingLocalFiles) {
+        await new Promise(r => setTimeout(r, 50));
+    }
+    isLoadingLocalFiles = true
+
+    // Don't race with files sync.
+    while (isSyncingFiles) {
+        await new Promise(r => setTimeout(r, 50));
+    }
+    isSyncingFiles = true
+
+    // New folder would miss files that were synced from server before,
+    // into a previous folder. That would send a signal to server "client has deleted some files".
+    // Which we do not want, so we clean our server files "understanding".
+    server = {files: {}, media: {}, timestamps: {}, mediaTimestamp: 0};
+    localStorage.removeItem("server");
 
     await saveDirectoryHandle(dirHandle);
     await write('/Help.md', getHelpContent());
 
-    // Media files got corrupted because they got copied from OPFS to local fs storage.
-    // It breaks binary files via .text()
-    // await migrateFromOPFSToLocal();
-    files = await loadLocalFiles(dirHandle)
+    // Copy user-created files from the temporary FS into the opened folder.
+    try {
+        await moveUserFiles(dirHandle);
+    } catch (e) {
+        logError("Can't move user files from temporary storage:", e);
+    }
+
+    isLoadingLocalFiles = false
+    try {
+        files = await loadLocalFiles(dirHandle);
+    } finally {
+        isSyncingFiles = false;
+    }
 
     isMemFS = false;
+    document.getElementById('open-folder').style.display = 'none';
     renderSidebar();
     await openChat();
 }
@@ -456,12 +479,18 @@ function toggleSidebar() {
     const sidebar = document.getElementById('sidebar');
     const openSidebar = document.getElementById('open-sidebar');
 
-    if (sidebar.style.display === 'none') {
+    const isHidden = sidebar.style.display === 'none'
+        || getComputedStyle(sidebar).display === 'none';
+
+    if (isHidden) {
         sidebar.style.display = 'flex';
         openSidebar.style.display = 'none';
+        // Suppresses the mobile media-query that hides the sidebar.
+        document.body.classList.add('sidebar-open');
     } else {
         sidebar.style.display = 'none';
         openSidebar.style.display = 'block';
+        document.body.classList.remove('sidebar-open');
         if (isChat) {
             chatInput.focus();
         } else {
@@ -508,6 +537,10 @@ function showEditor2() {
 }
 
 function hideEditor2() {
+    if (typeof editor2 === 'undefined') {
+        return
+    }
+
     const editor2Container = document.getElementById('editor2-container');
 
     editor2Container.classList.remove('show');
@@ -517,7 +550,9 @@ function hideEditor2() {
     // doesn't take the isSameFile short-circuit (which skips re-init and
     // would leave the panel visually empty after editor1 re-init nuked
     // editor2's wrapper).
-    if (typeof editor2 !== 'undefined') editor2.path = undefined;
+    editor2.path = undefined;
+    currentEditor = editor;
+    selectSidebarItem(editor.path);
 
     setTimeout(() => {
         editor2Container.style.display = 'none';
@@ -531,7 +566,6 @@ function isChrome() {
 
     var isChromium = window.chrome;
     var isOpera = typeof window.opr !== "undefined";
-    var isFirefox = winNav.userAgent.indexOf("Firefox") > -1;
     var isIEedge = winNav.userAgent.indexOf("Edg") > -1;
     var isIOSChrome = winNav.userAgent.match("CriOS");
     var isGoogleChrome = isChromium !== null
@@ -766,11 +800,7 @@ document.addEventListener('keydown', function(event) {
         }
         return;
     }
-    if (isMetaKey(event) && event.key === '~') {
-        event.preventDefault();
-        toggleSidebar();
-    }
-    if (isMetaKey(event) && event.key === '§') {
+    if (isSidebarToggleShortcut(event)) {
         event.preventDefault();
         toggleSidebar();
     }
@@ -828,20 +858,20 @@ window.addEventListener('focus', async () => {
 
     // Sync media first, so that new images for current file would be loaded
     await syncMediaFiles();
-    await syncCurrentText();
+    await syncCurrentFile();
 
     const start = performance.now();
     files = await loadLocalFiles(savedDirectoryHandle, true);
     const end = performance.now();
     log(`Files loaded in: ${(end - start).toFixed(3)} milliseconds`);
-    await syncTextsWithServer()
+    await syncFilesWithServer()
     await renderSidebar();
     log('Sync completed');
 });
 
 // Sync files on chat focus lose.
 window.addEventListener('blur', async function() {
-    log('Window lost focus');
+    log('BLUR');
     editor.refresh();
 
     // Start timer to open chat after idle.
@@ -855,7 +885,7 @@ window.addEventListener('blur', async function() {
         return;
     }
     await syncMediaFiles();
-    await syncCurrentText();
+    await syncCurrentFile();
 
     const savedDirectoryHandle = await getRootDirHandle();
 
@@ -864,7 +894,7 @@ window.addEventListener('blur', async function() {
     files = await loadLocalFiles(savedDirectoryHandle);
     const end = performance.now();
     log(`Files loaded in: ${(end - start).toFixed(3)} milliseconds`);
-    await syncTextsWithServer()
+    await syncFilesWithServer()
     await renderSidebar();
     log('Sync completed');
 });
@@ -888,6 +918,6 @@ window.addEventListener('beforeunload', function() {
 // Worker to process the saving queue
 window.saver = setInterval(() => {
     if (document.hasFocus()) {
-        syncCurrentText();
+        syncCurrentFile();
     }
 }, CURRENT_FILE_SYNC_INTERVAL);

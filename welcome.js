@@ -61,6 +61,15 @@ async function getTemporaryStorageDirHandle() {
         }
         await createFiles(WELCOME_FILES, root);
 
+        // Retouch My project.md file, so it appears in chat's quick buttons for better demo.
+        if (!archived.has('My Project.md')) {
+            await new Promise(r => setTimeout(r, 10));
+            const fh = await root.getFileHandle('My Project.md', { create: true });
+            const w = await fh.createWritable();
+            await w.write(WELCOME_FILES['My Project.md'].content);
+            await w.close();
+        }
+
         return root;
     } catch (e) {
         console.warn('OPFS unavailable, using in-memory FS:', e.message);
@@ -107,7 +116,8 @@ class MemFile {
         this.kind = 'file';
         this.name = name;
         this.content = content;
-        this.lastModified = Date.now();
+        // We want "My project.md" to appear in chat's quick buttons, for better demo.
+        this.lastModified = Date.now() + (name === 'My Project.md' ? 1 : 0);
         this.parent = null;
     }
 
@@ -191,37 +201,118 @@ class MemDir {
     }
 }
 
+// When a user starts in the temporary FS and later opens a local folder,
+// copy their in-mem files to local fs.
+async function moveUserFiles(targetRoot) {
+    const welcome = new Set(['Help.md']);
+    (function collect(obj, prefix) {
+        for (const [name, data] of Object.entries(obj)) {
+            if (data.isFile) {
+                welcome.add(prefix + name);
+                // Archive flattens names, archived welcome files keep theirs
+                welcome.add('archive/' + name);
+            } else {
+                collect(data, prefix + removeTrailingSlash(name) + '/');
+            }
+        }
+    })(WELCOME_FILES, '');
+
+    const tempRoot = await getTemporaryStorageDirHandle();
+
+    async function moveDir(srcDir, getDestDir, prefix) {
+        const entries = [];
+        for await (const entry of srcDir.values()) entries.push(entry);
+        let destDir = null;
+        const ensureDest = async () => destDir || (destDir = await getDestDir());
+        for (const entry of entries) {
+            const relPath = prefix + entry.name;
+            if (entry.kind === 'directory') {
+                await moveDir(
+                    entry,
+                    async () => (await ensureDest()).getDirectoryHandle(entry.name, { create: true }),
+                    relPath + '/',
+                );
+                continue;
+            }
+            if (welcome.has(relPath)) continue;
+            const dest = await ensureDest();
+            let exists = true;
+            try { await dest.getFileHandle(entry.name); } catch { exists = false; }
+            if (exists) continue;
+            const content = await (await entry.getFile()).arrayBuffer();
+            const fileHandle = await dest.getFileHandle(entry.name, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(content);
+            await writable.close();
+            await srcDir.removeEntry(entry.name);
+        }
+    }
+
+    await moveDir(tempRoot, async () => targetRoot, '');
+}
+
+function prefetchWelcomeImages() {
+    const urls = ['img/slipbox.webp', 'img/tomas_sanchez.jpg'];
+    for (const url of urls) {
+        const link = document.createElement('link');
+        link.rel = 'prefetch';
+        link.as = 'image';
+        link.href = url;
+        document.head.appendChild(link);
+    }
+}
+
 const WELCOME_FILES = {
     "brain/": {
         "We think that we understand, but in reality we just know.md": {
-            "content": "Reading and rereading can easily fool us into believing that we understand a text. Rereading is especially dangerous because of the mere-exposure effect: The moment we become familiar with something, we start believing we also understand it. On top of that, we also tend to like it it more.\n\n[Brain is the most complex object in known universe](/brain/Brain%20is%20the%20most%20complex%20object%20in%20known%20universe.md)",
+            "content": "Reading and rereading can easily fool us into believing that we understand a text. Rereading is especially dangerous because of the mere-exposure effect: The moment we become familiar with something, we start believing we also understand it. On top of that, we also tend to like it it more.\n\n[Brain is the most complex object in known universe](/brain/Brain%20is%20the%20most%20complex%20object%20in%20known%20universe.md)\n[Zettelkasten](/brain/Zettelkasten.md)",
             isFile: true,
         },
         "Brain is the most complex object in known universe.md": {
-            "content": "Nothing will make you appreciate human intelligence like learning about how unbelievably challenging it is to try to create a computer as smart as we are. Building skyscrapers, putting humans in space, figuring out the details of how the Big Bang went down - all far easier than understanding our own brain or how to make something as cool as it\n\n[We think that we understand, but in reality we just know](/brain/We%20think%20that%20we%20understand,%20but%20in%20reality%20we%20just%20know.md)",
+            "content": "Nothing will make you appreciate human intelligence like learning about how unbelievably challenging it is to try to create a computer as smart as we are. Building skyscrapers, putting humans in space, figuring out the details of how the Big Bang went down - all far easier than understanding our own brain or how to make something as cool as it\n\n[We think that we understand, but in reality we just know](/brain/We%20think%20that%20we%20understand,%20but%20in%20reality%20we%20just%20know.md)\n[Zettelkasten](/brain/Zettelkasten.md)",
             isFile: true,
         },
         "Change your environment instead of using willpower.md": {
-            "content": "When scientists analyze people who appear to have tremendous self-control, it turns out those individuals aren’t all that different from those who are struggling. Instead, “disciplined” people are better at structuring their lives in a way that does not require heroic willpower and self-control.\n",
+            "content": "When scientists analyze people who appear to have tremendous self-control, it turns out those individuals aren’t all that different from those who are struggling. Instead, “disciplined” people are better at structuring their lives in a way that does not require heroic willpower and self-control.\n\nIt is the way Luhmann and his slipbox  worked together that allowed him to move freely and flexibly between different tasks and levels of thinking. It is about having the right tools and knowing how to use them - and very few understand that you need both.\n\n" +
+                "Luhmann was able to focus on the important things right in front of him, pick up quickly where he left off and stay in control of the process because the structure of his work allowed him to do this.\n\n" +
+                "[Zettelkasten](/brain/Zettelkasten.md)",
+            isFile: true,
+        },
+        "Zettelkasten.md": {
+            "content":
+                "Zettelkasten, slipbox, or card file - a collection of small items of information stored on paper slips, linked to each other through subject headings or links. It has often been used as a system of note-taking and personal knowledge management for research, study, and writing.\n\n" +
+                "Niklas Luhmann described his slipbox as a \"competent communication partner\", a \"second memory\" he could communicate with.\n\n" +
+                "![](img/slipbox.webp)\n\n" +
+                "## Main Zettelkasten principles\n" +
+                "#### The principle of atomicity\n" +
+                "Each note should contain one idea and one idea only. This makes it possible to link ideas with a laser focus.\n\n" +
+                "#### The principle of autonomy\n" +
+                "Each note should be autonomous, meaning it should be self-contained and comprehensible on its own. This allows notes to be moved, processed, separated, and concatenated independently of its neighbors. It also ensures that notes remain useful even if the original source of information disappears.\n\n" +
+                "#### Always link your notes\n" +
+                "Whenever you add a note, make sure to link it to already existing notes. Avoid notes that are disconnected from other notes. As Luhmann himself put it, \"each note is just an element that derives its quality from the network of links in the system. A note that is not connected to the network will be lost, will be forgotten by the Zettelkasten\".\n\n" +
+                "**Files.md** has just enough features for you to grow your **Zettelkasten**. 🌱\n\n" +
+                "[Change your environment instead of using willpower](/brain/Change%20your%20environment%20instead%20of%20using%20willpower.md)\n" +
+                "[We think that we understand, but in reality we just know](/brain/We%20think%20that%20we%20understand,%20but%20in%20reality%20we%20just%20know.md)\n" +
+                "[Links](/Links.md)",
             isFile: true,
         },
     },
     "happiness/": {
-        "Meditation.md": {
-            "content": "Once you are relaxed, picture yourself living in an abundant world. In this abundant world, there are no restraints or limitations. Good things flow past you continuously. Imagine every abundant thing you have ever desired – car, home, friends, love, joy, wealth, success, peace of mind, challenge. Visualize yourself living your life surrounded by this abundance. Repeat this visualization several times a day until it begins to feel real to you. Open your arms, your heart, and your mind. Get out of the way, and let it happen.\n\n[Boredom is just an emotion](/happiness/Boredom%20is%20just%20an%20emotion.md)",
+        "Abundant meditation.md": {
+            "content": "Once you are relaxed, picture yourself living in an abundant world.\nIn this abundant world, there are no restraints or limitations.\nGood things flow past you continuously.\nImagine every abundant thing you have ever desired - car, home, friends, love, joy, wealth, success, peace of mind, challenge.\nVisualize yourself living your life surrounded by this abundance.\n\n![](img/tomas_sanchez.jpg)\n\nThe deeper meaning behind abundance visualization isn't necessarily about accumulating material possessions like money or cars.\n\nTrue abundance thinking is more about recognizing that in a world without artificial limitations, we would understand that our value and fulfillment don't come from external possessions. Instead, it's about cultivating an internal sense of “enough” and recognizing the richness that already exists in our lives.\n\n// If you had abundance without limitations, what would you do?\n\n[Boredom is just an emotion](/happiness/Boredom%20is%20just%20an%20emotion.md)",
             isFile: true,
         },
         "Boredom is just an emotion.md": {
-            "content": "It's not an indicator that you're doing something wrong in your life\n\nBefore we had phones and technologies we would just sit around the fire and we would talk and we wouldn't call that boring that was just life\n\nAnd bow we have that endless need for entertainment, anything when nothing is happening we think it's wrong and we need to fix it\n\nNon eventfulness is just a part of our life and you can embrace it as\npeace or you can frantically try to create more chaos\n\n[Meditation](/happiness/Meditation.md)",
+            "content": "It's not an indicator that you're doing something wrong in your life.\n\nBefore we had phones and technologies, we would just sit around the fire and we would talk. We wouldn't call that boring, that was just life.\n\n![](img/tomas_sanchez.jpg)\n\nAnd now we have that endless need for entertainment. When nothing is happening, we think it's wrong and we need to fix it.\n\nNon eventfulness is just a part of our life, and you can embrace it as peace, or you can frantically try to create more chaos.\n\n[Abundant meditation](/happiness/Abundant meditation.md)",
             isFile: true,
         },
     },
     "🪴 Welcome.md": {
         "content":
-            "To store files in a local folder, [open or create folder](cmd:openDir).\n\n" +
+            "To store files locally, [open or create a folder](cmd:openDir).\n\n" +
             "Use [chat](cmd:openChat) to dump whatever is on your mind.\n\n" +
-            // "Press `Cmd+K` or `Ctrl+K` to quick switch between notes.\n\n" +
-            "[Markdown Guide](/Markdown%20Guide.md)\n[Hotkeys](/Hotkeys.md)\n[Links](/Links.md)",
+            "Press `Cmd+K` or `Ctrl+K` to quick switch between files.\n\n" +
+            "[Markdown Guide](/Markdown%20Guide.md)\n[Zettelkasten](/brain/Zettelkasten.md)\n[Hotkeys](/Hotkeys.md)\n[Links](/Links.md)",
         isFile: true,
     },
     "Links.md": {
@@ -230,50 +321,59 @@ const WELCOME_FILES = {
             "Relations among ideas are far more important than the ideas themselves.\n" +
             "Learning is making meaningful connections.\n\n" +
             "Type `[` to insert a new link.\n\n" +
-            "[Markdown Guide](/Markdown%20Guide.md)",
+            "[Markdown Guide](/Markdown%20Guide.md)\n" +
+            "[Zettelkasten](/brain/Zettelkasten.md)",
         isFile: true,
     },
     "Markdown Guide.md": {
         "content":
-            "Use `#` for headers. More `#` symbols create smaller headers.\n" +
+            "Create headers with `# header`.\nAdd more # symbols for smaller headers: `## smaller header`.\n" +
             "\n" +
-            "#### Text Formatting\n" +
-            "- **Bold text** using `**bold**` or `__bold__` **(Cmd/Ctrl + B)**\n" +
-            "- *Italic text* using `*italic*` or `_italic_` **(Cmd/Ctrl + I)**\n" +
+            "## Text Formatting\n" +
+            "- **Bold text** using `**bold**` **(Cmd/Ctrl + B)**\n" +
+            "- *Italic text* using `*italic*` **(Cmd/Ctrl + I)**\n" +
             "- ***Bold and italic*** using `***text***`\n" +
             "- ~~Strikethrough~~ using `~~text~~`\n" +
             "- `Inline code` using backticks\n" +
             "\n" +
-            "#### Lists\n" +
+            "## Link\n" +
+            "You can insert your own links by typing `[`.\n" +
+            "\n" +
+            "## List\n" +
             "- First item\n" +
             "- Second item\n" +
             "  - Third item\n\n" +
             "1. First item\n" +
             "2. Second item\n" +
-            "   1. Third item\n" +
-            "\n" +
-            "#### Checklist\n" +
+            "   1. Third item\n\n" +
+            "## Checklist\n" +
             "- [x] Completed task\n" +
-            "- [ ] Incomplete task\n" +
-            "Format:\n`- [ ] Item`\n" +
+            "- [ ] Incomplete task\n\n" +
+            "Syntax:\n`- [ ] Item`\n" +
             "\n" +
-            "#### Blockquotes\n" +
+            "## Table\n" +
+            "| Action | Hotkey |\n" +
+            "| --- | --- |\n" +
+            "| Insert table | `Cmd/Ctrl + T` |\n" +
+            "| Insert checkbox | `Cmd/Ctrl + Y` |\n\n" +
+            "## Image\n" +
+            "![](img/tomas_sanchez.jpg)\n" +
+            "\n" +
+            "*You can paste your own images via `Cmd/Ctrl + V`*\n\n" +
+            "## Blockquote\n" +
             ">This is a blockquote. It can span multiple lines and is great for highlighting important information or quotes from other sources.\n" +
-            "\nFormat:\n`> This is a blockquote`\n" +
+            "\nSyntax:\n`> This is a blockquote`\n" +
             "\n" +
-            "#### Code Blocks\n" +
+            "## Code Block\n" +
             "```\n" +
             "Here is some code.\n" +
             "```\n" +
             "\n" +
-            "#### Images\n" +
-            "![Why taking notes](https://app.files.md/img/notes.jpg)\n" +
+            "## Math\n" +
+            "$\\LaTeX$ is fully supported: $e^{i\\pi} + 1 = 0$\n" +
             "\n" +
-            "*You can paste your own images via `Cmd/Ctrl + V`*\n\n" +
-            "#### Links\n" +
-            "You can insert your own links by typing `[`.\n\n" +
             "[Links](/Links.md)\n" +
-            "[My project](/My%20project.md)",
+            "[My Project](/My%20Project.md)",
         isFile: true,
     },
     "Hotkeys.md": {
@@ -281,17 +381,19 @@ const WELCOME_FILES = {
             "| Hotkey | Action |\n" +
             "| -------- | -------- |\n" +
             "| `[` | Insert a link to a file |\n" +
-            "| `Cmd+P` / `Ctrl+P` | Open file search modal |\n" +
+            "| `Cmd+K` / `Ctrl+K` | Open file search modal |\n" +
             "| `Cmd+N` / `Ctrl+N` | New file |\n" +
             "| `Cmd+M` / `Ctrl+M` | Move file |\n" +
             "| `Cmd+D` / `Ctrl+D` | Delete file |\n" +
             "| `Cmd+Enter` / `Ctrl+Enter` | Open chat |\n" +
             "| `Cmd+Shift+Enter` / `Ctrl+Shift+Enter` | Toggle chat dialog |\n" +
-            "| `Cmd+[` / `Ctrl+[`  | Go to previous file   |\n" +
-            "| `Cmd+]` / `Ctrl+]`  | Go to next file  |\n" +
+            "| `Cmd+[` / `Ctrl+[` | Go to previous file |\n" +
+            "| `Cmd+]` / `Ctrl+]` | Go to next file  |\n" +
             "| `Cmd+~` / `Ctrl+~` | Toggle sidebar |\n" +
             "| `Cmd+B` / `Ctrl+B` | Toggle **bold** formatting |\n" +
             "| `Cmd+I` / `Ctrl+I` | Toggle *italic* formatting |\n" +
+            "| `Cmd+Y` / `Ctrl+Y` | Insert checkbox |\n" +
+            "| `Cmd+T` / `Ctrl+T` | Insert table |\n" +
             "| `Cmd` / `Ctrl` + `Click` | Copy from `code` element |\n" +
             "| `Cmd` / `Ctrl` + `Click` | Open a link  |\n" +
             "| `Ctrl` + `Cmd` + `Space` | Insert emoji (MacOS) |\n" +
@@ -299,8 +401,11 @@ const WELCOME_FILES = {
             "[Markdown Guide](/Markdown%20Guide.md)",
         isFile: true,
     },
-    "My project.md": {
-        "content": "You can dump project related thoughts here.",
+    "My Project.md": {
+        "content":
+            "You can dump project related thoughts here.\n" +
+            "\n" +
+            "[Links](/Links.md)",
         isFile: true,
     },
 }
@@ -317,16 +422,14 @@ function getHelpContent() {
     const stripMdFileLinks = s => s
         .replace(/^[ \t]*\[[^\]\n]+\]\([^)\n]*\.md\)[ \t]*\n?/gm, '')
         .replace(/\n{3,}/g, '\n\n');
-    // Drop the "#### Images" chapter - it points at an external image
+    // Drop the "#### Image" chapter - it points at an external image
     // and isn't useful in the merged Help.md. Match runs until the
     // next #### header or end of string.
-    const stripImagesChapter = s => s.replace(/#### Images\n[\s\S]*?(?=#### |$)/g, '');
+    const stripImagesChapter = s => s.replace(/#### Image\n[\s\S]*?(?=#### |$)/g, '');
     return stripImagesChapter(stripMdFileLinks(
-        "### Hotkeys\n\n" +
         WELCOME_FILES["Hotkeys.md"].content +
         "\n\n" +
-        "### Markdown Guide\n\n" +
+        "## Markdown Guide\n\n" +
         WELCOME_FILES["Markdown Guide.md"].content
     ));
 }
-

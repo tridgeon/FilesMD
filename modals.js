@@ -2,7 +2,7 @@ class SearchModal {
     static RECENT_RESULTS = 15;
 
     constructor() {
-        this.selectedMsgText = null;
+        this.selectedMsgElement = null;
         this.focusedIndex = 0;
         this.init();
     }
@@ -185,9 +185,9 @@ class SearchModal {
         searchModal.showResults(results);
     }
 
-    open(text = '', selectedMsgText = null, buttonElement  = null) {
+    open(text = '', buttonElement = null, messageElement = null) {
         moveModal.close();
-        this.selectedMsgText = selectedMsgText;
+        this.selectedMsgElement = messageElement;
 
         let modal = document.getElementById('search');
         modal.style.display = 'flex';
@@ -200,7 +200,7 @@ class SearchModal {
         const goToFileResults = document.getElementById('search-results');
         goToFileResults.innerHTML = '';
 
-        if (text === '' && this.selectedMsgText === null) {
+        if (text === '' && this.selectedMsgElement === null) {
             this.showRecentFiles();
         } else if (text === '') {
             this.showRootFiles();
@@ -208,7 +208,7 @@ class SearchModal {
             this.search();
         }
 
-        if (buttonElement && this.selectedMsgText !== null) {
+        if (buttonElement && this.selectedMsgElement !== null) {
             const rect = buttonElement.getBoundingClientRect();
             const modalHeight = 300;
             const viewportHeight = window.innerHeight;
@@ -253,62 +253,58 @@ class SearchModal {
         // Drop the keep-actions-visible flag set by to-file-btn (today.js).
         document.querySelectorAll('.message.actions-pinned')
             .forEach(m => m.classList.remove('actions-pinned'));
-        this.selectedMsgText = null;
+        this.selectedMsgElement = null;
     }
 
     showResults(results) {
         const list = document.getElementById('search-results');
         list.innerHTML = '';
 
-        // First dirs then files.
-        // We can either move message to a dir (creating new file).
-        // Or to an existing file, prepending text to a file.
-        let dirCount = 0;
-        if (this.selectedMsgText !== null) {
+        const focusOnHover = (item) => {
+            item.onmousemove = () => {
+                document.querySelectorAll('#search-results li').forEach(li => li.classList.remove('focused'));
+                item.classList.add('focused');
+                this.focusedIndex = Array.from(list.children).indexOf(item);
+            };
+        };
+        const addDirItem = (dir) => {
+            const dataDir = dir === '/' ? '' : dir;
+            const item = document.createElement('li');
+            item.textContent = dir === '/' ? '/' : (dir + '/');
+            item.setAttribute('data-dir', dataDir);
+            item.onclick = () => this.moveToDir(dataDir);
+            focusOnHover(item);
+            list.appendChild(item);
+        };
+        const addFileItem = (path) => {
+            const item = document.createElement('li');
+            const title = trimPostfix(trimPostfix(toFilename(path), '.md'), '.txt');
+            const dirName = toDirPath(path);
+            item.textContent = dirName === '/' ? title : trimPrefix(`${dirName}/${title}`, '/');
+            item.setAttribute('data-path', path);
+            item.onclick = () => this.moveToFile(path);
+            focusOnHover(item);
+            list.appendChild(item);
+        };
+
+        if (this.selectedMsgElement !== null) {
+            // Move-to-file order: /, then root files, then folders, then other files.
             const searchVal = (document.getElementById('search-input').value || '').toLowerCase();
             const dirs = this.getDirs().filter(d => searchVal === '' || d.toLowerCase().includes(searchVal));
-            dirs.forEach((dir) => {
-                const dataDir = dir === '/' ? '' : dir;
-                const listItem = document.createElement('li');
-                listItem.textContent = dir === '/' ? '/' : (dir + '/');
-                listItem.setAttribute('data-dir', dataDir);
-                listItem.onclick = () => this.moveToDir(dataDir);
-                listItem.onmousemove = () => {
-                    document.querySelectorAll('#search-results li').forEach(li => li.classList.remove('focused'));
-                    listItem.classList.add('focused');
-                    this.focusedIndex = Array.from(list.children).indexOf(listItem);
-                };
-                list.appendChild(listItem);
+            const files = results.filter(({path}) => path !== CONFIG_PATH && path !== CHAT_PATH);
+            const rootFiles = files.filter(({path}) => toDirPath(path) === '/');
+            const subFiles = files.filter(({path}) => toDirPath(path) !== '/');
+
+            if (dirs.includes('/')) addDirItem('/');
+            rootFiles.forEach(({path}) => addFileItem(path));
+            dirs.filter(d => d !== '/').forEach(addDirItem);
+            subFiles.forEach(({path}) => addFileItem(path));
+        } else {
+            results.forEach(({path}) => {
+                if (path === CONFIG_PATH) return;
+                addFileItem(path);
             });
-            dirCount = dirs.length;
         }
-
-        results.forEach(({path}, index) => {
-            if (path === CONFIG_PATH) {
-                return;
-            }
-            if (this.selectedMsgText !== null && path === CHAT_PATH) {
-                return;
-            }
-
-            const listItem = document.createElement('li');
-            let title = trimPostfix(trimPostfix(toFilename(path), '.md'), '.txt');
-            let dirName = toDirPath(path);
-            if (dirName === '/') {
-                listItem.textContent = title;
-            } else {
-                listItem.textContent = trimPrefix(`${dirName}/${title}`, '/');
-            }
-            listItem.setAttribute('data-path', path);
-            listItem.onclick = () => this.moveToFile(path);
-
-            listItem.onmousemove = () => {
-                document.querySelectorAll('#search-results li').forEach(li => li.classList.remove('focused'));
-                listItem.classList.add('focused');
-                this.focusedIndex = dirCount + index;
-            };
-            list.appendChild(listItem);
-        });
 
         this.focusedIndex = 0;
         this.updateFocusedItem();
@@ -329,7 +325,7 @@ class SearchModal {
     }
 
     async moveToDir(toDir) {
-        if (this.selectedMsgText === null) {
+        if (this.selectedMsgElement === null) {
             this.close();
             return;
         }
@@ -338,13 +334,11 @@ class SearchModal {
         let msgs = [];
         let messagesToRemove = [];
         if (selectedMessages.length > 0) {
-            msgs = Array.from(selectedMessages).map(m => m.querySelector('.message-content').textContent);
+            msgs = Array.from(selectedMessages).map(m => m.querySelector('.message-content').dataset.text);
             messagesToRemove = selectedMessages;
         } else {
-            const message = Array.from(document.querySelectorAll('.message'))
-                .find(el => el.dataset.text === this.selectedMsgText);
-            msgs = [this.selectedMsgText];
-            messagesToRemove = [message];
+            msgs = [this.selectedMsgElement.querySelector('.message-content').dataset.text];
+            messagesToRemove = [this.selectedMsgElement];
         }
 
         const destinations = [];
@@ -378,23 +372,20 @@ class SearchModal {
     }
 
     async moveToFile(path) {
-        if (this.selectedMsgText !== null) {
+        if (this.selectedMsgElement !== null) {
             const selectedMessages = document.querySelectorAll('.message.selected');
 
             let msgs = [];
             let messagesToRemove = [];
             if (selectedMessages.length > 0) {
-                msgs = Array.from(selectedMessages).map(msg => msg.querySelector('.message-content').textContent);
+                msgs = Array.from(selectedMessages).map(msg => msg.querySelector('.message-content').dataset.text);
                 messagesToRemove = selectedMessages;
             } else {
-                const message = Array.from(document.querySelectorAll('.message'))
-                    .find(el => el.dataset.text === this.selectedMsgText);
-                const btn = message?.querySelector('button').textContent;
-                msgs = [this.selectedMsgText];
-                messagesToRemove = [message];
+                msgs = [this.selectedMsgElement.querySelector('.message-content').dataset.text];
+                messagesToRemove = [this.selectedMsgElement];
             }
 
-            let callback = async text => await addHeaderAndText(path, todayHeader(), text, true, false);
+            let callback = async text => await addHeaderAndText(path, todayHeader(), ucfirst(text), true, false);
             for (const msg of msgs) {
                 await moveFromChat(msg, callback);
                 await renderMessages();
@@ -484,7 +475,6 @@ class SearchModal {
 
 class MoveModal {
     constructor() {
-        this.selectedMsgText = null;
         this.focusedIndex = 0;
         this.init();
     }
@@ -533,9 +523,8 @@ class MoveModal {
         });
     }
 
-    open(selectedMsgText = null, buttonElement = null) {
+    open() {
         searchModal.close();
-        this.selectedMsgText = selectedMsgText;
 
         let modal = document.getElementById('move');
         modal.style.display = 'flex';
@@ -543,43 +532,13 @@ class MoveModal {
         const inputField = document.getElementById('move-input');
         inputField.focus();
 
-        if (buttonElement && this.selectedMsgText !== null) {
-            const rect = buttonElement.getBoundingClientRect();
-            const modalHeight = 300;
-            const viewportHeight = window.innerHeight;
-            const spaceBelow = viewportHeight - rect.bottom;
-            const spaceAbove = rect.top;
-
-            const positionAbove = spaceBelow < modalHeight && spaceAbove > spaceBelow;
-            modal.style.position = 'fixed';
-
-            modal.style.left = '50%';
-            modal.style.transform = 'translateX(-50% + 150px)';
-
-            modal.style.transform = '';
-            modal.style.width = '320px';
-
-            if (positionAbove) {
-                modal.style.bottom = `${viewportHeight - rect.top + 5}px`;
-                modal.style.top = '';
-                // Reverse the order: results on top, input at bottom
-                modal.classList.add('modal-reversed');
-            } else {
-                modal.style.top = `${rect.bottom + 5}px`;
-                modal.style.bottom = '';
-                // Normal order: input on top, results below
-                modal.classList.remove('modal-reversed');
-            }
-        } else {
-            // Default center position
-            modal.style.position = 'fixed';
-            modal.style.top = '30%';
-            modal.style.left = '50%';
-            modal.style.right = '';
-            modal.style.transform = 'translate(-50%, 0)';
-            modal.style.width = '';
-            modal.classList.remove('modal-reversed');
-        }
+        modal.style.position = 'fixed';
+        modal.style.top = '30%';
+        modal.style.left = '50%';
+        modal.style.right = '';
+        modal.style.transform = 'translate(-50%, 0)';
+        modal.style.width = '';
+        modal.classList.remove('modal-reversed');
 
         this.focusedIndex = 0;
         const moveResults = document.getElementById('move-results');
@@ -590,7 +549,6 @@ class MoveModal {
     close() {
         document.getElementById('move').style.display = 'none';
         document.getElementById('move').classList.remove('modal-reversed');
-        this.selectedMsgText = null;
     }
 
     getMoveDestinations() {
@@ -677,51 +635,10 @@ class MoveModal {
     }
 
     moveToDir(toDir) {
-        if (this.selectedMsgText === null) {
-            log('CLICKED ON folder to move', toDir);
-            moveCurrentFile(toDir).then(() => {
-                this.close();
-            });
-            return;
-        }
-
-        const selectedMessages = document.querySelectorAll('.message.selected');
-        let msgs = [];
-        let messagesToRemove = [];
-        if (selectedMessages.length > 0) {
-            msgs = Array.from(selectedMessages).map(msg => msg.querySelector('.message-content').textContent);
-            messagesToRemove = selectedMessages;
-        } else {
-            // Find message by message-content
-            const msg = Array.from(document.querySelectorAll('.message'))
-                .find(el => el.dataset.text === this.selectedMsgText);
-            msgs = [this.selectedMsgText];
-            messagesToRemove = [msg];
-        }
-
-        (async () => {
-            for (const msg of msgs) {
-                const [header, body] = extractHeaderAndBody(msg, MAX_TITLE_LENGTH);
-                const path = joinPath('/', toDir, sanitizeFilename(header)) + '.md';
-                for (const msg of msgs) {
-                    await moveFromChat(msg, async () => {
-                        await write(path, body)
-                    });
-                    await renderMessages();
-                }
-            }
-            await renderMessages();
-        })();
-
-        messagesToRemove.forEach(message => {
-            message.classList.add('removing');
-            setTimeout(() => {
-                message.remove();
-            }, 300);
+        log('CLICKED ON folder to move', toDir);
+        moveCurrentFile(toDir).then(() => {
+            this.close();
         });
-        chatInput.focus();
-        renderSidebar();
-        this.close();
     }
 }
 

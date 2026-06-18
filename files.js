@@ -1,14 +1,36 @@
+// files.js - connects three worlds:
+// - the disk (File System Access API), an
+// - in-memory mirror (`files`)
+// - and a snapshot of what the server has (`server`, persisted to localStorage).
+//
+// Sync model: each batch round-trip sends modified
+// files, locally-deleted paths, per-dir timestamp cursors, and a global fslog
+// "commit offset" (`server.serverTime`); receives files to pull, renames, and
+// server-side deletes from the fslog newer than the watermark.
+
+// User can set his own server apiUrl through localstorage.
 const API_URL = localStorage.getItem('apiUrl') || 'https://api.files.md';
 const CURRENT_FILE_SYNC_INTERVAL = 1000; // ms, how often to save currently open file
+// Matches server's MaxMediaSize (server/sync/sync.go). Server caps the JSON
+// request body, which holds base64 (~33% inflation), so the effective raw
+// file limit is roughly 3/4 of this. Files above MAX_MEDIA_SIZE are rejected
+// outright; files between 3/4 and 1 of MAX_MEDIA_SIZE may still be refused
+// by the server when base64 pushes the body past the cap.
+const MAX_MEDIA_SIZE = 30 * 1024 * 1024;
 
 let isSaving = false;
-let isSyncingTexts = false;
+let isSyncingFiles = false;
 let isSyncingMedia = false;
 let isMessingWithCurrentEditor = false;
 let isSyncingFileWithServer = {}; // path -> bool, prevents concurrent server syncs for the same file
 let needsResyncWithServer = {}; // path -> bool, flags that another sync was requested while one was in flight
 let isLoadingLocalFiles = false;
 
+// We should know if we had at least one successful
+// communication with the server (/token), so that
+// we run sync periodically. We won't run if the app
+// is not linked to the server. Unfortunately we can't just
+// check "token" cookie, because it is HttpOnly.
 const LAST_SERVER_OK_KEY = 'lastServerOk';
 const MAX_DIR_NESTING_LEVEL = 10;
 
@@ -46,6 +68,32 @@ function hasLastServerOk() {
 //   ]
 // }
 let files = {}; // In-memory representation of local files
+
+// In-memory snapshot of what the server has, persisted to localStorage
+// under SERVER_STORAGE_KEY and rehydrated at boot:
+// {
+//   files: {
+//     'dir/': {
+//       'filename.md': {
+//         hash: '<content hash>',
+//         lastModified: <server timestamp>,
+//         lastClientModified: <client timestamp the server acknowledged>,
+//         path: '/dir/filename.md'
+//       },
+//       ...
+//     },
+//     ...
+//   },
+//   media: {
+//     'image.png': {
+//       isFile: true,
+//       lastModified: <server timestamp>
+//     },
+//     ...
+//   },
+//   timestamps: { '<path>': <ts>, ... }, // per-path cursor for incremental sync
+//   mediaTimestamp: <max ts across media> // single cursor for media sync
+// }
 let server = {files: {}, media: {}, timestamps: {}, mediaTimestamp: 0}; // In-memory representation of server
 
 // Reverse index for non-md files (currently just images): filename -> first.
@@ -54,13 +102,17 @@ let server = {files: {}, media: {}, timestamps: {}, mediaTimestamp: 0}; // In-me
 let mediaIndex = {};
 
 const SERVER_STORAGE_KEY = 'server'; // If scheme is migrated, I believe it's better to introduce a new key, because for now old keys aren't removed.
-const SUPPORTED_EXTENSIONS = ['md', 'png', 'jpg', 'jpeg', 'webp', 'gif',];
+const SUPPORTED_EXTENSIONS = ['md', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'mp4', 'webm', 'mov', 'mp3', 'ogg', 'oga', 'weba', 'wav'];
+
+function isMediaPath(path) {
+    return /\.(png|jpg|jpeg|gif|webp|mp4|webm|mov|mp3|ogg|oga|weba|wav)$/i.test(path);
+}
 const SYSTEM_DIRS = ['media', 'archive', 'journal', 'habits', 'triggers', 'insights'];
 const CONFIG_PATH = '/config.json';
 
 async function loadLocalFiles(rootDirHandle, slowMode = false) {
     if (isLoadingLocalFiles) {
-        return;
+        return files;
     }
     isLoadingLocalFiles = true;
 
@@ -131,9 +183,7 @@ async function loadLocalFiles(rootDirHandle, slowMode = false) {
                     });
                 }
 
-                const ext = filename.split('.').pop().toLowerCase();
-                const isImg = ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext);
-                if (!isImg) {
+                if (!isMediaPath(filename)) {
                     continue
                 }
 
@@ -196,8 +246,7 @@ async function loadLocalFiles(rootDirHandle, slowMode = false) {
     return newFiles;
 }
 
-// config.json is currently only synced from server, no local changes are propogated.
-async function syncTextsWithServer() {
+async function syncFilesWithServer() {
     // We should have at least one 200 response from service.
     // The first 200 response we get from /token, meaning that
     // our application is linked to the server for sync.
@@ -211,8 +260,8 @@ async function syncTextsWithServer() {
         return;
     }
 
-    if (isSyncingTexts) return;
-    isSyncingTexts = true;
+    if (isSyncingFiles) return;
+    isSyncingFiles = true;
 
     const startTime = performance.now();
     log('Starting sync with server...');
@@ -235,10 +284,11 @@ async function syncTextsWithServer() {
         modified: modified,
         deleted: deleted,
         timestamps: server['timestamps'] || [],
+        serverTime: server['serverTime'] || 0,
     });
     if (error) {
         logError('syncFilenames failed:', error);
-        isSyncingTexts = false;
+        isSyncingFiles = false;
         return;
     }
 
@@ -297,6 +347,28 @@ async function syncTextsWithServer() {
                 }
             }
         }
+        // Apply server-side deletions: drop any local file that was deleted on
+        // server. Local copies older than the recorded deletedAt are deleted.
+        // If local change is newer than deletedAt - we skip deletion.
+        if (response.deleted) {
+            const serverTime = server['serverTime'] || 0;
+            for (const [relPath, deletedAt] of Object.entries(response.deleted)) {
+                const path = joinPath('/', relPath);
+                const local = getMemFile(path);
+                if (!local) continue;
+                if (local.lastModified > deletedAt) continue;
+                try {
+                    log('SYNC: deleting locally due to server fslog:', path);
+                    // await remove(path);
+                    // removeServerFile(path);
+                } catch (err) {
+                    logError('SYNC: cant delete locally:', err, path);
+                }
+            }
+            server['serverTime'] = serverTime;
+            saveServerFiles();
+        }
+
         // Only move timestamp pointers when we were able to sync all the files.
         // Otherwise we can have situation when we synced files only partially,
         // let's say serverFiles is having only half files from server, then they
@@ -315,7 +387,7 @@ async function syncTextsWithServer() {
 
     log('Sync completed in ' + (performance.now() - startTime) + 'ms');
 
-    isSyncingTexts = false;
+    isSyncingFiles = false;
 }
 
 async function syncLocalFileWithServer(path) {
@@ -426,6 +498,10 @@ async function syncMediaFiles() {
                 // TODO improve that hardcode :D
                 let fileHandle = await getFileHandle('media/' + mediaFilename)
                 let file = await fileHandle.getFile();
+                if (file.size > MAX_MEDIA_SIZE) {
+                    logError(`Skipping ${mediaFilename}: ${(file.size / 1024 / 1024).toFixed(1)} MB exceeds ${(MAX_MEDIA_SIZE / 1024 / 1024).toFixed(0)} MB limit`);
+                    continue;
+                }
                 const arrayBuffer = await file.arrayBuffer();
                 const uint8Array = new Uint8Array(arrayBuffer);
                 let binaryString = '';
@@ -449,7 +525,9 @@ async function syncMediaFiles() {
                     }),
                 });
                 if (!response.ok) {
-                    logError(`Failed to sync media file ${mediaFilename}: ${response.status}`);
+                    let body = '';
+                    try { body = await response.text(); } catch (_) {}
+                    logError(`Failed to sync media file ${mediaFilename}: ${response.status} ${response.statusText}: ${body}`.trim());
                 } else {
                     markServerOk();
                     server['media'][mediaFilename] = {
@@ -590,6 +668,13 @@ async function collectModifiedAndDeletedFiles() {
         }
 
         if (path.startsWith('/media/') || path === LOG_PATH) {
+            return;
+        }
+        // Binary media files (images, video) anywhere in the tree must not
+        // go through the text sync path - file.text() corrupts them and the
+        // JSON-escaped string can balloon past MaxFilenamesSize, returning
+        // 400 from syncFilenames. They sync via syncMediaFile when in /media/.
+        if (isMediaPath(path)) {
             return;
         }
 
@@ -775,7 +860,18 @@ function getImageExtension(mimeType) {
         'image/jpeg': 'jpg',
         'image/jpg': 'jpg',
         'image/gif': 'gif',
-        'image/webp': 'webp'
+        'image/webp': 'webp',
+        'video/mp4': 'mp4',
+        'video/webm': 'webm',
+        'video/quicktime': 'mov',
+        'audio/mpeg': 'mp3',
+        'audio/mp3': 'mp3',
+        'audio/ogg': 'ogg',
+        'audio/wav': 'wav',
+        'audio/x-wav': 'wav',
+        // audio-only WebM gets the dedicated .weba extension so fold-image.js
+        // routes it through the <audio> path (the video regex still owns .webm).
+        'audio/webm': 'weba'
     };
     return extensions[mimeType] || 'png';
 }
@@ -993,11 +1089,13 @@ async function openFile(path, saveToHistory = true, el = 'editor-textarea') {
     } else if (el === 'editor2-textarea') {
         currentEditor = editor2;
     }
-    let thereIsPreviousEditorToSync = currentEditor.path !== undefined;
+    // Only sync the switch-away editor when it has unsaved changes.
+    let thereIsPreviousEditorToSync =  !currentEditor.isClean() &&currentEditor.path !== undefined;
     if (thereIsPreviousEditorToSync) {
+        const syncStart = performance.now();
         log('Began syncing previous file');
-        await syncCurrentText(true);
-        log('Finished syncing previous file');
+        await syncCurrentFile(true);
+        log(`Finished syncing previous file in ${(performance.now() - syncStart).toFixed(3)} ms`);
     }
 
     // Lock the current editor during the operation, so we won't interrupt syncCurrentEditor in the middle.
@@ -1097,10 +1195,12 @@ async function openFile(path, saveToHistory = true, el = 'editor-textarea') {
 
         // Once we spent enough time in file, set viewportMargin to infinity to prevent artefacts.
         // Artefacts can be observed during text selection (cmd+a).
+        // Also cmd+f (native find) doesn't work on lazy-loaded documents =(
         setTimeout(() => {
             currentEditor.setOption('viewportMargin', Infinity);
-        }, 100);
+        }, 200);
 
+        selectSidebarItem(path);
     } catch (err) {
         logError('openFile:', err);
         throw err;
@@ -1116,7 +1216,7 @@ async function openFile(path, saveToHistory = true, el = 'editor-textarea') {
 // TODO It should be atomic.
 // If currentEditor is changed during the execution of this function, we'll have RC.
 // So, wherever we change currentEditor reference, we should lock via isMessingWithCurrentEditor.
-async function syncCurrentText(switchAwayEditor = false) {
+async function syncCurrentFile(switchAwayEditor = false) {
     if (files === undefined || debug || currentEditor.path === undefined) {
         return;
     }
@@ -1160,7 +1260,6 @@ async function syncCurrentText(switchAwayEditor = false) {
                 let localLastModified = file.lastModified;
                 // TODO inmemory lastmodified should be reloaded
                 if (inMemoryLastModified !== localLastModified) {
-                    log(files);
                     isMessingWithCurrentEditor = false;
                     if (!switchAwayEditor) {
                         await openFile(CHAT_PATH);
@@ -1223,6 +1322,22 @@ async function syncCurrentText(switchAwayEditor = false) {
             log('Filename has changed from ', filename, 'to', newFilename);
 
             const newPath = joinPath(toDirPath(path), newFilename);
+
+
+            // Do not delete existing files with same name. Compare names
+            // case-insensitively, as most local filesystems do.
+            let dirFiles = files;
+            for (const dir of toDirPath(path).split('/').filter(s => s !== '')) {
+                dirFiles = dirFiles && dirFiles[dir + '/'];
+            }
+            const nameTaken = dirFiles && Object.keys(dirFiles).some(
+                name => !name.endsWith('/') && name.toLowerCase() === newFilename.toLowerCase());
+            if (nameTaken) {
+                showToast(`File "${trimPostfix(newFilename, '.md')}" already exists`);
+                isMessingWithCurrentEditor = false;
+                return;
+            }
+
             let content = getCurrentContent();
 
             // Probe the new path before deleting the old file. Sanitization should
@@ -1284,7 +1399,6 @@ async function syncCurrentText(switchAwayEditor = false) {
     const content = getCurrentContent();
     let contentWasModifiedLocally = false;
     try {
-        // const path = `${dir}/${filename}`;
         contentWasModifiedLocally = !await isContentEqual(path, content);
     } catch (error) {
         logError('Error checking content equality:', error);

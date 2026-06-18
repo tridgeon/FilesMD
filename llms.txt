@@ -7,7 +7,7 @@ All files are plain Markdown (.md) stored locally.
 
 ```
 /
-├── *.md                  # Notes
+├── *.md                  # Projects, big notes
 ├── <category>/           # Note directories (brain/, happiness/, ...)
 │   └── *.md              # Notes, e.g. brain/Memory.md
 │
@@ -17,7 +17,6 @@ All files are plain Markdown (.md) stored locally.
 ├── Read.md               # Reading list (checklist)
 ├── Watch.md              # Watch list (checklist)
 ├── Shop.md               # Shopping list (checklist)
-├── MyChecklist_.md       # Custom checklist
 │
 ├── journal/              # Daily journal
 │   └── YYYY.MM Month.md  # e.g. 2024.08 August.md

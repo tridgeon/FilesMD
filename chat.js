@@ -3,6 +3,8 @@ let chatIsClean = true; // Are there any unsaved changes?
 const chat = document.getElementById('chat');
 const chatInput = document.getElementById('chat-input');
 const chatContainer = document.getElementById('chat-container');
+const sendChatBtn = document.getElementById('send-chat');
+const micChatBtn = document.getElementById('mic-chat');
 
 const MAX_TITLE_LENGTH = 100;
 const RECENT_FILES = 1;
@@ -11,8 +13,20 @@ const RECENT_FILES = 1;
 // work when the file's content hasn't changed.
 let lastChatText = null;
 
-// Add event listener for input changes
-chatInput.addEventListener('input', autoResize);
+function updateChatActionButton() {
+    if (!sendChatBtn || !micChatBtn) return;
+    // Don't swap while a recording is in progress - keep the mic visible so
+    // the user can press it again to stop.
+    if (micChatBtn.classList.contains('recording')) return;
+    const hasText = chatInput.value.trim().length > 0;
+    sendChatBtn.style.display = hasText ? 'flex' : 'none';
+    micChatBtn.style.display = hasText ? 'none' : 'flex';
+}
+
+chatInput.addEventListener('input', () => {
+    autoResize();
+    updateChatActionButton();
+});
 // Initial resize to set proper height
 autoResize();
 
@@ -51,12 +65,112 @@ async function sendToChat() {
 
     chatInput.value = '';
     chatIsClean = false;
+    updateChatActionButton();
     await renderMessages();
     const allMessages = chat.querySelectorAll('.message');
     if (allMessages.length > 0) {
         allMessages[allMessages.length - 1].classList.add('actions-shown');
     }
     scrollToBottom();
+}
+
+// Voice recording. First click starts capture, second click stops, saves to
+// media/, and appends a chat message with the audio markdown so the inline
+// audio player (fold-image.js) picks it up just like a pasted file.
+let chatMediaRecorder = null;
+let chatMediaStream = null;
+let chatMediaChunks = [];
+
+async function toggleMicRecording() {
+    const micBtn = document.getElementById('mic-chat');
+
+    if (chatMediaRecorder && chatMediaRecorder.state === 'recording') {
+        chatMediaRecorder.stop();
+        return;
+    }
+
+    let stream;
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    } catch (err) {
+        logError('Microphone access denied:', err);
+        alert('Microphone access denied or unavailable: ' + err.message);
+        return;
+    }
+
+    chatMediaStream = stream;
+    chatMediaChunks = [];
+
+    // Pick a webm-compatible mime if the browser supports it; fall back to
+    // whatever MediaRecorder picks (Safari hands us mp4 here).
+    let mimeType = 'audio/webm';
+    if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = '';
+
+    chatMediaRecorder = new MediaRecorder(stream, mimeType ? {mimeType} : undefined);
+    chatMediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chatMediaChunks.push(e.data);
+    };
+    chatMediaRecorder.onstop = async () => {
+        micBtn.classList.remove('recording');
+        updateChatActionButton();
+        // Release the mic so the OS indicator clears.
+        if (chatMediaStream) {
+            chatMediaStream.getTracks().forEach(t => t.stop());
+            chatMediaStream = null;
+        }
+
+        if (chatMediaChunks.length === 0) {
+            chatMediaRecorder = null;
+            return;
+        }
+
+        const recordedType = chatMediaRecorder.mimeType || 'audio/webm';
+        const blob = new Blob(chatMediaChunks, {type: recordedType});
+        chatMediaRecorder = null;
+
+        const ext = getImageExtension(recordedType.split(';')[0]);
+        const now = new Date();
+        const dd = String(now.getDate()).padStart(2, '0');
+        const mm = String(now.getMonth() + 1).padStart(2, '0');
+        const yyyy = now.getFullYear();
+        const hh = String(now.getHours()).padStart(2, '0');
+        const mi = String(now.getMinutes()).padStart(2, '0');
+        const ss = String(now.getSeconds()).padStart(2, '0');
+        const fileName = `${dd}.${mm}.${yyyy} ${hh}h${mi}m${ss}s.${ext}`;
+
+        try {
+            const fileHandle = await writeMediaFile(fileName, blob);
+            if (!fileHandle) {
+                logError('Failed to save voice message.');
+                alert('Failed to save voice message.');
+                return;
+            }
+            if (!files['media/']) files['media/'] = {};
+            files['media/'][fileName] = {
+                isFile: true,
+                handle: fileHandle,
+                lastModified: Date.now(),
+                imageUrl: URL.createObjectURL(blob),
+            };
+
+            const now = new Date();
+            const timestamp = now.toLocaleTimeString('en-US', {
+                hour12: false, hour: '2-digit', minute: '2-digit',
+            });
+            const formattedContent = `\n- [ ] \`${timestamp}\` ![](media/${fileName})\n`;
+            await writeAtEnd(CHAT_PATH, formattedContent);
+
+            chatIsClean = false;
+            await renderMessages();
+            scrollToBottom();
+        } catch (err) {
+            logError('Error saving voice message:', err);
+            alert('Error saving voice message: ' + err.message);
+        }
+    };
+
+    chatMediaRecorder.start();
+    micBtn.classList.add('recording');
 }
 
 async function openChat() {
@@ -74,6 +188,7 @@ async function openChat() {
     codemirror.style.display = 'none';
     chat.style.display = 'flex';
     chatInput.style.display = 'block';
+    updateChatActionButton();
     hideEditor2();
 
     const searchModal = document.getElementById('search');
@@ -90,8 +205,10 @@ async function openChatModal() {
     chatContainer.style.display = 'flex';
     chat.style.display = 'block';
     chatInput.style.display = 'block';
+    updateChatActionButton();
     chat.style.display = 'flex';
     chatInput.style.display = 'block';
+    updateChatActionButton();
 
     chatInput.focus();
     await renderMessages();
@@ -104,6 +221,8 @@ function closeChatModal() {
         chatContainer.style.display = 'none';
         chat.style.display = 'none';
         chatInput.style.display = 'none';
+        if (sendChatBtn) sendChatBtn.style.display = 'none';
+        if (micChatBtn) micChatBtn.style.display = 'none';
     }
 }
 
@@ -283,10 +402,27 @@ function scrollToBottom() {
     }, 100);
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+function escapeHtml(unsafe) {
+    return unsafe
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+// Swap media markdown (![](media/file.ext)) for an emoji + bare filename
+// in chat-message display. Original text stays in `data-text` so the
+// move/journal/archive actions still operate on the real markdown.
+function prettifyMediaTags(text) {
+    return text.replace(/!\[[^\]]*\]\(([^)]+)\)/g, (_, path) => {
+        const filename = path.split('/').pop();
+        const ext = filename.split('.').pop().toLowerCase();
+        const emoji = /^(mp3|ogg|oga|weba|wav)$/.test(ext) ? '🎵'
+            : /^(mp4|webm|mov)$/.test(ext) ? '🎬'
+            : '🖼️';
+        return `${emoji} ${filename}`;
+    });
 }
 
 function autoResize() {
@@ -294,13 +430,10 @@ function autoResize() {
         chatInput.style.height = '';
         return;
     }
-
-    if (chatInput.value.split('\n').length <= 1) {
-        return;
+    chatInput.style.height = '';
+    if (chatInput.scrollHeight > chatInput.clientHeight) {
+        chatInput.style.height = Math.min(chatInput.scrollHeight, 250) + 'px';
     }
-
-    chatInput.style.height = 'auto';
-    chatInput.style.height = Math.min(chatInput.scrollHeight, 250) + 'px';
 }
 
 function getRecentlyModifiedFiles(n) {
@@ -367,6 +500,8 @@ chatInput.addEventListener('paste', async (e) => {
                 const newCursorPos = cursorPos + imageMarkdown.length;
                 chatInput.setSelectionRange(newCursorPos, newCursorPos);
                 chatInput.focus();
+                autoResize();
+                updateChatActionButton();
             }
             break;
         }
@@ -580,6 +715,7 @@ function attachEventListeners() {
     // });
 
     chat.querySelectorAll('.complete-btn').forEach(btn => {
+        btn.addEventListener('mousedown', function (e) { e.stopPropagation(); });
         btn.addEventListener('click', async function (e) {
             e.stopPropagation();
             const el = btn.closest('.message');
@@ -602,12 +738,11 @@ function attachEventListeners() {
                 searchModal.close();
             } else {
                 const message = btn.closest('.message');
-                const text = ucfirst(message.querySelector('.message-content').textContent);
                 // Keep this message's action row visible while the picker is
                 // open - mouse leaves the bubble as soon as the modal grabs
                 // focus, otherwise the buttons fade out under the user.
                 message.classList.add('actions-pinned');
-                searchModal.open('', text, e.target);
+                searchModal.open('', e.target, message);
             }
         });
     });
@@ -620,10 +755,10 @@ function attachEventListeners() {
             let msgs = [];
             let messagesToRemove = [];
             if (selectedMessages.length > 0) {
-                msgs = Array.from(selectedMessages).map(msg => msg.querySelector('.message').textContent);
+                msgs = Array.from(selectedMessages).map(msg => msg.querySelector('.message-content').dataset.text);
                 messagesToRemove = selectedMessages;
             } else {
-                msgs = [btn.closest('.message').querySelector('.message-content').textContent];
+                msgs = [btn.closest('.message').querySelector('.message-content').dataset.text];
                 messagesToRemove = [btn.closest('.message')];
             }
 
@@ -659,7 +794,7 @@ function attachEventListeners() {
             let msgs = [];
             let messagesToRemove = [];
             if (selectedMessages.length > 0) {
-                msgs = Array.from(selectedMessages).map(msg => msg.querySelector('.message').textContent);
+                msgs = Array.from(selectedMessages).map(msg => msg.querySelector('.message-content').dataset.text);
                 messagesToRemove = selectedMessages;
             } else {
                 msgs = [btn.closest('.message').dataset.text];
@@ -704,10 +839,10 @@ function attachEventListeners() {
             let msgs = [];
             let messagesToRemove = [];
             if (selectedMessages.length > 0) {
-                msgs = Array.from(selectedMessages).map(msg => msg.querySelector('.message-content').textContent);
+                msgs = Array.from(selectedMessages).map(msg => msg.querySelector('.message-content').dataset.text);
                 messagesToRemove = selectedMessages;
             } else {
-                msgs = [btn.closest('.message').querySelector('.message-content').textContent];
+                msgs = [btn.closest('.message').querySelector('.message-content').dataset.text];
                 messagesToRemove = [btn.closest('.message')];
             }
 
@@ -748,10 +883,10 @@ function attachEventListeners() {
             let msgs = [];
             let messagesToRemove = [];
             if (selectedMessages.length > 0) {
-                msgs = Array.from(selectedMessages).map(msg => msg.querySelector('.message-content').textContent);
+                msgs = Array.from(selectedMessages).map(msg => msg.querySelector('.message-content').dataset.text);
                 messagesToRemove = selectedMessages;
             } else {
-                msgs = [btn.closest('.message').querySelector('.message-content').textContent];
+                msgs = [btn.closest('.message').querySelector('.message-content').dataset.text];
                 messagesToRemove = [btn.closest('.message')];
             }
 
@@ -806,8 +941,7 @@ async function renderMessages() {
         chat.innerHTML = `
             <div class="empty-state">
                 <img class="empty-icon" src="img/icon.png" alt="">
-                <div class="empty-title">Free your head</div>
-                <div class="empty-desc">Drop whatever’s on your mind here</div>
+                <div class="empty-title">Free your mind</div>
             </div>
         `;
         return;
@@ -817,7 +951,7 @@ async function renderMessages() {
     const recentFilesButtons = recentFiles.map(filename => `
     <div class="btn-wrapper">
        <button class="action-btn to-recent-btn" data-filename="${filename}">
-           ${filename.replace(/\.md$/, '').slice(0, 10)}${filename.replace(/\.md$/, '').length > 10 ? '…' : ''}
+           → ${filename.replace(/\.md$/, '').slice(0, 10)}${filename.replace(/\.md$/, '').length > 10 ? '…' : ''}
        </button>
        <span class="btn-label">To ${filename.replace(/\.md$/, '')}</span>
     </div>
@@ -833,7 +967,7 @@ async function renderMessages() {
             </button>
             <div class="message-content"
                  data-text="${escapeHtml(message.text)}"
-                 spellcheck="false">${escapeHtml(message.text)}</div>
+                 spellcheck="false">${escapeHtml(prettifyMediaTags(message.text))}</div>
             <div class="message-footer">
                 <span class="message-time">${message.timestamp}</span>
                 <div class="message-actions">
@@ -845,7 +979,7 @@ async function renderMessages() {
                                 <path d="M13 3H8.2C7.0799 3 6.51984 3 6.09202 3.21799C5.71569 3.40973 5.40973 3.71569 5.21799 4.09202C5 4.51984 5 5.0799 5 6.2V17.8C5 18.9201 5 19.4802 5.21799 19.908C5.40973 20.2843 5.71569 20.5903 6.09202 20.782C6.51984 21 7.0799 21 8.2 21H12M13 3L19 9M13 3V7.4C13 7.96005 13 8.24008 13.109 8.45399C13.2049 8.64215 13.3578 8.79513 13.546 8.89101C13.7599 9 14.0399 9 14.6 9H19M19 9V12M17 19H21M19 17V21" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
                             </svg>
                         </button>
-                    <span class="btn-label">To Note</span>
+                    <span class="btn-label">To File</span>
                     </div>
                     
                     <div class="btn-wrapper">
