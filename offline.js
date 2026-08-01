@@ -31,6 +31,7 @@ const urlsToCache = [
     '/lib/fold-image.js',
     '/lib/fold-link.js',
     '/lib/fold-code.js',
+    '/lib/fold-encrypt.js',
     '/lib/hypermd-mermaid.js',
     // mermaid.min.js intentionally NOT pre-cached; lazy-loaded on first use
     // and the SW's dynamic fetch handler caches it at that point.
@@ -41,7 +42,10 @@ const urlsToCache = [
     '/lib/codemirror-python.js',
     '/lib/codemirror-javascript.js',
     '/lib/codemirror-php.js',
+    '/lib/codemirror-yaml.js',
+    '/lib/codemirror-sql.js',
     '/lib/codemirror-shell.js',
+    '/lib/codemirror-powershell.js',
     '/lib/similarity.js',
     '/lib/emoji.js',
     '/lib/fs.js',
@@ -50,6 +54,7 @@ const urlsToCache = [
     '/welcome.js',
     '/files.js',
     '/editor.js',
+    '/editorRR.js',
     '/chat.js',
     '/modals.js',
     '/lib/latex/fold-math.js',

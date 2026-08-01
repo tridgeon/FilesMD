@@ -9,14 +9,15 @@
 // server-side deletes from the fslog newer than the watermark.
 
 // User can set his own server apiUrl through localstorage.
-const API_URL = localStorage.getItem('apiUrl') || 'https://api.files.md';
+const API_URL = localStorage.getItem('apiUrl') || document.location.protocol + '//' + document.location.host;
+localStorage.setItem('apiUrl', API_URL);
 const CURRENT_FILE_SYNC_INTERVAL = 1000; // ms, how often to save currently open file
 // Matches server's MaxMediaSize (server/sync/sync.go). Server caps the JSON
 // request body, which holds base64 (~33% inflation), so the effective raw
 // file limit is roughly 3/4 of this. Files above MAX_MEDIA_SIZE are rejected
 // outright; files between 3/4 and 1 of MAX_MEDIA_SIZE may still be refused
 // by the server when base64 pushes the body past the cap.
-const MAX_MEDIA_SIZE = 30 * 1024 * 1024;
+const MAX_MEDIA_SIZE = 65 * 1024 * 1024;
 
 let isSaving = false;
 let isSyncingFiles = false;
@@ -36,6 +37,35 @@ const MAX_DIR_NESTING_LEVEL = 10;
 
 function markServerOk() {
     localStorage.setItem(LAST_SERVER_OK_KEY, Date.now().toString());
+}
+
+// Sync indicator for the current file: a quiet dot that turns orange while
+// the server hasn't yet acked what's in the editor - either because you just
+// typed (clears on the next sync tick) or because the server is unreachable.
+// Hidden for local-only setups.
+let lastSyncOkAt = null;
+
+function renderSyncStatus(state) { // 'ok' | 'edits' | 'error'
+    const dot = document.getElementById('sync-status');
+    if (dot === null) {
+        return;
+    }
+    const at = lastSyncOkAt === null
+        ? 'never'
+        : new Date(lastSyncOkAt).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    dot.style.display = 'block';
+    dot.classList.toggle('bad', state !== 'ok');
+    dot.title = state === 'ok' ? `Synced at ${at}`
+        : state === 'edits' ? `Unsynced changes. Last synced at ${at}`
+        : `Not synced, server unreachable. Last synced at ${at}`;
+}
+
+// Called on every editor change (see initEditor).
+function markSyncDirty() {
+    if (!hasLastServerOk()) {
+        return;
+    }
+    renderSyncStatus('edits');
 }
 
 function hasLastServerOk() {
@@ -280,11 +310,14 @@ async function syncFilesWithServer() {
     } else {
         log('NEVER SYNCED BEFORE');
     }
+
+    let rootDirHandle = await getRootDirHandle();
     const { json: response, error } = await post('syncFilenames', {
         modified: modified,
         deleted: deleted,
         timestamps: server['timestamps'] || [],
         serverTime: server['serverTime'] || 0,
+        rootDir: rootDirHandle.name,
     });
     if (error) {
         logError('syncFilenames failed:', error);
@@ -304,7 +337,11 @@ async function syncFilesWithServer() {
             let {path, content, lastModified} = fileInfo;
             // We get relative paths from server, and in our app we use absolute paths
             const relPath = path;
+            
             path = joinPath('/', relPath);
+            if (path.includes('\\')) {  
+                path = path.replace(/\\/g, '/');
+            }
 
             // If it is current file, skip, because we sync it separately
             // TODO if we skip current, don't take it's timestamp? We had a bug when sync was broken for 1 file
@@ -409,8 +446,9 @@ async function syncLocalFileWithServer(path) {
         // TODO we might only need to send content when modifying
         let content = await file.text();
         let serverTimestamp = getServerFile(path)?.lastModified || 0;
-
+        
         let serverFile = {};
+        let rootDirHandle = await getRootDirHandle();
         const clientLastModified = file.lastModified;
         const { json, error } = await post('syncFile', {
             path: path,
@@ -420,10 +458,30 @@ async function syncLocalFileWithServer(path) {
             // decide whether the file was modified on client or not.
             clientLastSynced: getServerFile(path)?.lastClientModified || 0,
             content: content,
+            rootDir: rootDirHandle.name,
         });
         if (error) {
             logError(`syncText ${path} failed:`, error);
+            if (window.currentEditor?.path === path) {
+                renderSyncStatus('error');
+            }
             return;
+        }
+        // The server acked `content` - but only report "synced" if the source
+        // of truth still holds exactly that; edits made mid-flight stay orange
+        // until the next tick confirms them. In chat mode messages are written
+        // straight to the file (not through the editor), so compare against a
+        // fresh read of the file; for the editor, getCurrentContent() (not
+        // getValue()) because the `# Filename` header line is stripped from
+        // what is written and synced.
+        if (window.currentEditor?.path === path) {
+            const truth = (typeof isChat !== 'undefined' && isChat && path === CHAT_PATH)
+                ? await (await (await getFileHandle(path)).getFile()).text()
+                : getCurrentContent();
+            if (truth === content) {
+                lastSyncOkAt = Date.now();
+                renderSyncStatus('ok');
+            }
         }
 
         // For the cases when server was updated only on server, we move lastSyncedAt pointer,
@@ -486,11 +544,16 @@ async function syncMediaFiles() {
     }
 
     isSyncingMedia = true;
-
+    let rootDirHandle = await getRootDirHandle();
     const startTime = performance.now();
+    let hasFullySyncedFilesAtLeastOnce = server['mediaTimestamp'] !== undefined && Object.keys(server['mediaTimestamp']).length > 0;
+    // MEH i dont knwo just sync atlease once and set the media stamp jeeez
+    if (!hasFullySyncedFilesAtLeastOnce) {
+        server['mediaTimestamp'] = 1;
+    }
 
     const mediaTimestamp = server['mediaTimestamp'] || 0;
-    if (mediaTimestamp !== 0) {
+    if (mediaTimestamp !== 0 ) {
         // Send new files from client to server
         let newMedias = await collectNewMediaFiles();
         for (const mediaFilename of newMedias) {
@@ -522,6 +585,8 @@ async function syncMediaFiles() {
                     body: JSON.stringify({
                         filename: mediaFilename,
                         data: base64String,
+                        rootDir: rootDirHandle.name,
+
                     }),
                 });
                 if (!response.ok) {
@@ -568,7 +633,8 @@ async function syncMediaFiles() {
                     },
                     body: JSON.stringify({
                         filename: filename,
-                        timestamp: mediaTimestamp
+                        timestamp: mediaTimestamp,
+                        rootDir: rootDirHandle.name,
                     })
                 });
                 if (!response.ok) {
@@ -600,7 +666,7 @@ async function saveMediaFile(path, blob, lastModified) {
         log(`Malformed name for ${path}, skipping file...`);
         return;
     }
-
+    let rootDirHandle = await getRootDirHandle();
     // Check if file exists already
     try {
         const file = await fileHandle.getFile();
@@ -1591,6 +1657,73 @@ function toFilename(path) {
     const {filename} = toDirPathAndFilename(path);
 
     return filename;
+}
+
+// Percent-encode a path for use inside a markdown link's `](...)`. Spaces and
+// an unescaped `)` both close the link early, breaking any link/image whose
+// file name contains them. hmdResolveURL / hmdReadLink decode these back.
+function encodeLinkPath(path) {
+    return path.replace(/ /g, '%20').replace(/\(/g, '%28').replace(/\)/g, '%29');
+}
+
+// Backlink: after a link from `sourcePath` to `targetPath` is inserted, make
+// the target point back - append a link to the source at the bottom of the
+// target, unless the target already links to it.
+async function addBacklink(sourcePath, targetPath) {
+    if (!sourcePath || !targetPath) return;
+    if (!sourcePath.startsWith('/')) sourcePath = '/' + sourcePath;
+    if (!targetPath.startsWith('/')) targetPath = '/' + targetPath;
+    if (sourcePath === targetPath) return; // never self-link
+
+    const url = encodeLinkPath(sourcePath);
+    const name = toFilename(sourcePath).replace(/\.md$/, '');
+    const backlink = `[${name}](${url})`;
+
+    // Separator before the appended backlink: tight (single newline) when the
+    // file already ends with a link line, so stacked backlinks don't grow blank
+    // lines; a blank line only separates the first backlink from prose.
+    const separatorFor = (text) => {
+        const body = text.replace(/\s+$/, '');
+        if (!body) return '';
+        const lastLine = body.slice(body.lastIndexOf('\n') + 1);
+        return /^\s*\[/.test(lastLine) ? '\n' : '\n\n';
+    };
+
+    // If the target is open in an editor, append through it so the edit goes
+    // via the normal save path and isn't clobbered by a stale editor save.
+    const open = (editor && editor.path === targetPath && editor)
+        || (editor2 && editor2.path === targetPath && editor2) || null;
+    if (open) {
+        const value = open.getValue();
+        if (value.includes(`](${url})`)) return; // already links back
+        const doc = open.getDoc();
+        const body = value.replace(/\s+$/, '');
+        const from = open.posFromIndex(body.length);
+        const to = {line: doc.lastLine(), ch: doc.getLine(doc.lastLine()).length};
+        doc.replaceRange(separatorFor(value) + backlink, from, to);
+        return;
+    }
+
+    let content;
+    try {
+        content = await read(targetPath);
+    } catch (e) {
+        logError('Backlink: cannot read target', targetPath, e);
+        return;
+    }
+    if (content.includes(`](${url})`)) return; // already links back
+
+    const body = content.replace(/\s+$/, '');
+    const newContent = body + separatorFor(content) + backlink + '\n';
+    try {
+        await write(targetPath, newContent);
+    } catch (e) {
+        logError('Backlink: cannot write target', targetPath, e);
+        return;
+    }
+    const mem = getMemFile(targetPath);
+    if (mem && 'content' in mem) mem.content = newContent;
+    try { await syncLocalFileWithServer(targetPath); } catch (e) { /* best effort */ }
 }
 
 // Dir with no slash at the end.
